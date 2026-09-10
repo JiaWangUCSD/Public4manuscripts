@@ -2,7 +2,7 @@ This folder includes scripts and datasets used in the manuscript: Range-dependen
 
 Five figures in the manuscript:
 1. Figure 1b: radar beam diameter
-   &emsp;Script:
+   *Script:
    &emsp;Data:
    &emsp;Command: 
 2. Figure 2: spatial distribution of median reflectivity innovations
