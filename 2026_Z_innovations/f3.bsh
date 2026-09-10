@@ -1,0 +1,691 @@
+#!/bin/bash -f
+# Plot climatology OmB of mdBZ
+
+cmd=$(basename $0)
+num_args=9
+
+usage() {
+   echo ""
+   echo "Usage : $cmd MRMS_mdBZ_type MRMS_Z_type MRMS_P_type climatology_def opt4thresh var4stats minNpts4season main_f90 domain4stratification_list"
+   echo -e "\tMRMS_mdBZ_type : MergedReflectivityQCComposite MergedReflectivityQComposite"
+   echo -e "\tMRMS_Z_type    : MergedReflectivityQC"
+   echo -e "\tMRMS_P_type    : PrecipRate"
+   echo -e "\tclimatology_def: AllyearAllmonth AllyearDJF AllyearMAM AllyearJJA AllyearSON" 
+   echo -e "\topt4thresh     : 1-"
+   echo -e "\tvar4stats      : Zconus"
+   echo -e "\tminNpts4season : 0 100 200"
+   echo -e "\tmain_f90       : calc.stats.ZPH.v1.f90 -> O > Thresh && B > Thresh"
+   echo -e "\t                 calc.stats.ZPH.v2.f90 -> O > Thresh || B > Thresh"
+   echo -e "\tdomain4stratification_list: xxx xxx"
+   echo -e "\t                            CONUS PNWCA NorthEast SouthEast NorthWestEast"
+   echo " "
+   exit 2222
+}
+if [[ $# -lt ${num_args} ]] ; then usage ; fi
+
+MRMS_mdBZ_type=$1    ; shift
+MRMS_Z_type=$1       ; shift
+MRMS_P_type=$1       ; shift
+climatology_def=$1   ; shift
+opt4thresh=$1        ; shift
+var4stats=$1         ; shift
+minNpts4season=$1    ; shift
+main_f90=$1          ; shift
+domain4stratification_list=("${@}")
+
+
+if [[ ! "${var4stats}" =~ ^(Zconus)$ ]]; then echo "ERROR: var4stats=${var4stats} is illegal"; exit 2222; fi
+
+# When npts < minNpts, do not plot OmB
+minNpts4year=$((minNpts4season*4))
+
+if [[ "${climatology_def}" == "AllyearAllmonth" ]]; then
+   minNpts=${minNpts4year}
+else
+   minNpts=${minNpts4season}
+fi
+unset minNpts4year minNpts4season
+
+if [[ "${MRMS_mdBZ_type}" =~ ^(MergedReflectivityQCComposite|MergedReflectivityQComposite)$ ]]; then
+   if [[ "${MRMS_P_type}" == "PrecipRate" ]]; then
+      filename_p1="ZPH"
+      filename_p2="${MRMS_mdBZ_type}_${MRMS_P_type}"
+      nlev4mdbzOmB_shouldBe=1
+      nlev4zOmB_shouldBe=2 # 1000 m, 4000 m
+      nlev4Zconus_shouldBe=2
+   else
+      echo "ERROR: MRMS_P_type=${MRMS_P_type} is illegal"; exit 2222
+   fi
+else
+   echo "ERROR: MRMS_mdBZ_type=${MRMS_mdBZ_type} is illegal"; exit 2222
+fi
+
+
+### Folders
+: "${myscript:?Need to set myscript environment variable}"
+: "${mydata:?Need to set mydata environment variable}"
+fig_dir="${myscript}/Figures"
+out_dir="${myscript}/OUT"
+fix_dir="${myscript}/FIX"
+utl_dir="${myscript}/Utilities"
+scripts_dir="${myscript}/paper2026_Zomb"
+epoch=`date +"%s"`
+
+
+### File
+#infile_name="${out_dir}/results4${main_f90}/${filename_p1}.OmBhrrr.Climatology_${climatology_def}.EveryLeadTime.${filename_p2}.opt4thresh_${opt4thresh}.fromFortran.nc"
+declare -a file_list
+for domain4stratification in "${domain4stratification_list[@]}"; do
+    file_name="${out_dir}/${filename_p1}.OmBhrrr.Climatology_${climatology_def}.EveryLeadTime.${filename_p2}.opt4thresh_${opt4thresh}.${domain4stratification}.fromFortran.nc"
+    if [[ ! -f ${file_name} ]]; then echo "ERROR: no ${file_name}"; exit 2222; fi
+    file_list+=("${file_name}")
+done
+
+
+### Figure
+fig_name="${fig_dir}/$(basename ${file_name} .${domain4stratification}.fromFortran.nc).stats_${var4stats}.minNpts${minNpts}.fromFortran"
+[[ -f ${fig_name}.pdf ]] && rm -rf ${fig_name}.pdf
+
+
+### shapefile
+# US: https://www.weather.gov/gis/USStates
+CAshape_file="${utl_dir}/NCL/CA_shapefiles/CA_Counties_TIGER2016.shp"
+if [[ ! -f ${CAshape_file} ]]; then echo "ERROR: NO ${CAshape_file}"; exit 2222; fi
+echo "CA Shapefile:  ${CAshape_file}"
+
+USshape_file="${utl_dir}/NCL/US_shapefiles/s_22mr22.shp"
+if [[ ! -f ${USshape_file} ]]; then echo "ERROR: NO ${USshape_file}"; exit 2222; fi
+echo "US Shapefile:  ${USshape_file}"
+
+
+### Radar file
+radarALL_file="${myscript}/calc_nexrad/radar-stations.txt"
+if [[ ! -f ${radarALL_file} ]]; then echo "ERROR: no ${radarALL_file}"; exit 2222; fi
+radarUSE_file="${myscript}/calc_nexrad/radar-stations.CONUSonly.NAMEonly.txt"
+if [[ ! -f ${radarUSE_file} ]]; then echo "ERROR: no ${radarUSE_file}"; exit 2222; fi
+
+
+### Modify the file name list, so that it could be recognized in NCL
+declare -a file_list_NCL
+for ii in "${!file_list[@]}"; do
+    if [ ${ii} -lt $((${#file_list[@]}-1)) ]; then
+       file_list_NCL[${ii}]="\"${file_list[${ii}]}\","
+    else
+       file_list_NCL[${ii}]="\"${file_list[${ii}]}\""
+    fi
+done
+
+declare -a domain4stratification_list_NCL
+for ii in "${!domain4stratification_list[@]}"; do
+    if [ ${ii} -lt $((${#domain4stratification_list[@]}-1)) ]; then
+       domain4stratification_list_NCL[${ii}]="\"${domain4stratification_list[${ii}]}\","
+    else
+       domain4stratification_list_NCL[${ii}]="\"${domain4stratification_list[${ii}]}\""
+    fi
+done
+
+
+### create NCL file
+#ncl_name="${out_dir}/${cmd}.${epoch}.ncl"
+ncl_name="${out_dir}/${cmd}.${epoch}.$(basename ${fig_name}).ncl"
+if [[ -f ${ncl_name} ]]; then rm -rf ${ncl_name}; fi
+
+cat > ${ncl_name} << EOF
+load "${utl_dir}/NCL/plot.radars.ncl"
+
+begin
+
+minNpts            = ${minNpts}
+nlev4mdbzOmB_shouldBe = ${nlev4mdbzOmB_shouldBe}
+nlev4zOmB_shouldBe    = ${nlev4zOmB_shouldBe}
+nlev4Zconus_shouldBe  = ${nlev4Zconus_shouldBe}
+
+CAshape_file = "${CAshape_file}"
+USshape_file = "${USshape_file}"
+
+radarALL_file   = "${radarALL_file}"
+radarUSE_file   = "${radarUSE_file}"
+
+file_list_NCL                  = (/${file_list_NCL[@]}/)
+domain4stratification_list_NCL = (/${domain4stratification_list_NCL[@]}/)
+ndomain = dimsizes(file_list_NCL)
+
+do idomain = 0, ndomain-1
+   if(domain4stratification_list_NCL(idomain).eq."CONUS") then
+      idomain_CONUS     = idomain
+   else if(domain4stratification_list_NCL(idomain).eq."PNWCA") then
+      idomain_PNWCA     = idomain
+   else if(domain4stratification_list_NCL(idomain).eq."NorthEast") then
+      idomain_NorthEast = idomain
+   else if(domain4stratification_list_NCL(idomain).eq."SouthEast") then
+      idomain_SouthEast = idomain
+   end if
+   end if
+   end if
+   end if
+end do
+
+
+;;; Dimensions
+file_name = file_list_NCL(0) 
+infile    = addfile(file_name, "r")
+
+dim_sizes = getfiledimsizes(infile)   ; Returns an array of sizes
+dim_names = getfiledimnames(infile)
+do i = 0, dimsizes(dim_names)-1
+   if(dim_names(i).eq."beamDiameter") then
+      nbins_beamDiameter  = dim_sizes(i)
+   else if(dim_names(i).eq."dist2freezing") then
+      nbins_dist2freezing = dim_sizes(i)
+   else if(dim_names(i).eq."radarName") then
+      nbins_radarName     = dim_sizes(i)
+   else if(dim_names(i).eq."x") then
+      nx                  = dim_sizes(i)
+   else if(dim_names(i).eq."y") then
+      ny                  = dim_sizes(i)
+   else if(dim_names(i).eq."height") then
+      nlev                = dim_sizes(i)   
+   else if(dim_names(i).eq."LeadTime") then
+      nLeadTime           = dim_sizes(i)      
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+end do
+delete([/dim_sizes,dim_names/])
+
+if(nlev.ne.nlev4Zconus_shouldBe) then
+   print("ERROR: nlev != nlev4Zconus_shouldBe")
+   exit()
+end if
+
+lev1d  = infile->XLEV
+lat2d  = infile->XLAT
+lon2d  = infile->XLONG
+LeadTime_arrInt = infile->LeadTime ; [minutes]
+delete([/infile/])
+
+do iLeadTime = 0, nLeadTime-1
+   if(LeadTime_arrInt(iLeadTime).eq.0) then
+      iLeadTime_0min   = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.15) then
+      iLeadTime_15min  = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.30) then
+      iLeadTime_30min  = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.60) then
+      iLeadTime_60min  = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.180) then
+      iLeadTime_180min = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.360) then
+      iLeadTime_360min = iLeadTime
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+end do
+
+
+;;; Variables
+var4read_list = (/"${var4stats}_p50", "${var4stats}_npts"/)
+omb_p50  = new((/ndomain,nLeadTime,nlev,nbins_dist2freezing,nbins_beamDiameter/),"float")
+omb_npts = new((/ndomain,nLeadTime,nlev,nbins_dist2freezing,nbins_beamDiameter/),"integer")
+
+do idomain = 0, ndomain-1
+   file_name = file_list_NCL(idomain) 
+   print("READ: "+file_name)
+   infile    = addfile(file_name, "r")	
+
+   dim_sizes = getfiledimsizes(infile)   ; Returns an array of sizes
+   dim_names = getfiledimnames(infile)
+   do i = 0, dimsizes(dim_names)-1
+      if(dim_names(i).eq."beamDiameter") then
+         nbins_beamDiameter_in  = dim_sizes(i)
+      else if(dim_names(i).eq."dist2freezing") then
+         nbins_dist2freezing_in = dim_sizes(i)
+      else if(dim_names(i).eq."radarName") then
+         nbins_radarName_in     = dim_sizes(i)
+      else if(dim_names(i).eq."x") then
+         nx_in                  = dim_sizes(i)
+      else if(dim_names(i).eq."y") then
+         ny_in                  = dim_sizes(i)
+      else if(dim_names(i).eq."height") then
+         nlev_in                = dim_sizes(i)
+      else if(dim_names(i).eq."LeadTime") then
+         nLeadTime_in           = dim_sizes(i)
+      end if
+      end if
+      end if
+      end if
+      end if
+      end if
+      end if
+   end do
+   delete([/dim_sizes,dim_names/])
+   ;if(nbins_beamDiameter.ne.nbins_beamDiameter_in .or. nbins_dist2freezing.ne.nbins_dist2freezing_in .or. nbins_radarName_in.ne.nbins_radarName .or. nx.ne.nx_in .or. ny.ne.ny_in .or. nlev.ne.nlev_in .or. nLeadTime.ne.nLeadTime_in) then
+    if(nbins_beamDiameter.ne.nbins_beamDiameter_in .or. nbins_dist2freezing.ne.nbins_dist2freezing_in .or. nx.ne.nx_in .or. ny.ne.ny_in .or. nlev.ne.nlev_in .or. nLeadTime.ne.nLeadTime_in) then
+      print("ERROR: dims are wrong")	   
+      exit()
+   end if
+   ;delete([/nbins_beamDiameter_in,nbins_dist2freezing_in,nbins_radarName_in,nx_in,ny_in,nlev_in,nLeadTime_in/])
+    delete([/nbins_beamDiameter_in,nbins_dist2freezing_in,nx_in,ny_in,nlev_in,nLeadTime_in/])
+
+   lev1d_in  = infile->XLEV
+   lat2d_in  = infile->XLAT
+   lon2d_in  = infile->XLONG
+   LeadTime_arrInt_in = infile->LeadTime ; [minutes]
+   tmp1 = max(abs(lev1d_in-lev1d))
+   tmp2 = max(abs(lat2d_in-lat2d))
+   tmp3 = max(abs(lon2d_in-lon2d))
+   tmp4 = max(abs(LeadTime_arrInt_in-LeadTime_arrInt))
+   if(tmp1.ne.0. .or. tmp2.ne.0. .or. tmp3.ne.0. .or. tmp4.ne.0) then
+      print("ERROR: coordinates are wrong")       
+      exit()
+   end if
+   delete([/lev1d_in,lat2d_in,lon2d_in,LeadTime_arrInt_in,tmp1,tmp2,tmp3,tmp4/])	   
+
+   do ivar    = 0, dimsizes(var4read_list)-1
+      var_name = var4read_list(ivar)
+      tmp      = infile->\$var_name\$    ; (LeadTime, height, dist2freezing, beamDiameter) 
+      if(isStrSubset(var_name,"p50")) then
+	 omb_p50(idomain,:,:,:,:)      = tmp
+      else if(isStrSubset(var_name,"npts")) then
+         omb_npts(idomain,:,:,:,:)     = tmp
+      end if 
+      end if 
+      delete([/var_name,tmp/])
+   end do
+
+   delete([/file_name,infile/])
+end do
+; Check
+tmp1     = dimsizes(omb_p50)
+nlev4var = tmp1(2)
+if ("${var4stats}".eq."Zconus") then
+   if(nlev4var.ne.nlev4Zconus_shouldBe) then
+      print("ERROR: nlev4var is wrong")
+      exit()
+   end if
+end if
+delete([/tmp1/])
+
+print("OmB (climatology): [min,avg,max] = ["+min(omb_p50)+","+avg(omb_p50)+","+max(omb_p50)+"]")
+print("   *** Mask OmB where npts < "+minNpts+" ***   ")
+omb_p50      = where(omb_npts.lt.minNpts, omb_p50@_FillValue  , omb_p50)
+omb_npts     = where(omb_npts.eq.0.0,     omb_npts@_FillValue,  omb_npts)
+
+print("Median   (climatology): [min,avg,max] = ["+min(omb_p50)+","+avg(omb_p50)+","+max(omb_p50)+"]")
+print("Npt      (climatology): [min,avg,max] = ["+min(omb_npts)+","+avg(omb_npts)+","+max(omb_npts)+"]")
+
+
+
+;;; boundaries for the box
+nbox_x = nbins_beamDiameter
+xbox_bdys = new((/nbox_x,2/),"float")
+xbox_bdys(0,0) = 0.0
+xbox_bdys(0,1) = xbox_bdys(0,0)+0.25
+do i = 1, nbox_x-1
+   xbox_bdys(i,0) = xbox_bdys(i-1,1)
+   xbox_bdys(i,1) = xbox_bdys(i,0)+0.25
+end do
+xbox_bdys = xbox_bdys*1000.0 ; [m]
+do i = 0, nbox_x-1
+   print("xbox_bdys = ["+xbox_bdys(i,0)+", "+xbox_bdys(i,1)+") m")
+   ;tmXBLabels_str(i)="["+xbox_bdys(i,0)+"~F18~-~F25~"+xbox_bdys(i,1)+")"
+end do
+
+nbox_y = nbins_dist2freezing
+ybox_bdys = new((/nbox_y,2/),"float")
+ybox_bdys(0,0) = -8.0
+ybox_bdys(0,1) = ybox_bdys(0,0)+0.25
+do i = 1, nbox_y-1
+   ybox_bdys(i,0) = ybox_bdys(i-1,1)
+   ybox_bdys(i,1) = ybox_bdys(i,0)+0.25
+end do
+ybox_bdys = ybox_bdys*1000.0 ; [m]
+do i = 0, nbox_y-1
+   print("ybox_bdys = ["+ybox_bdys(i,0)+", "+ybox_bdys(i,1)+") m")
+   ;tmYLLabels_str(i)="["+ybox_bdys(i,0)+"~F18~-~F25~"+ybox_bdys(i,1)+")"
+end do
+
+y_axis = 1.0*ispan(1,nbox_y,1)
+x_axis = 1.0*ispan(1,nbox_x,1)
+
+
+;;; Find the y-location corresponds to 1-km above the freezing level
+do i = 0, nbox_y-1
+   if(ybox_bdys(i,1).eq.1000.) then
+      break
+   end if
+end do
+xx4line = x_axis*1.0
+yy4line = new(dimsizes(xx4line),"float")
+yy4line = (y_axis(i)+y_axis(i+1))/2.0
+
+
+;;; Variable
+plt_var_copy = new((/nbox_y+2,nbox_x+2/),"float")
+plt_var_copy = plt_var_copy@_FillValue
+
+plt_var_copy!0 = "y_add2"
+plt_var_copy!1 = "x_add2"
+
+plt_var_copy&y_add2 = new((/nbox_y+2/),typeof(y_axis))
+plt_var_copy&y_add2(0)=y_axis(0)-1
+plt_var_copy&y_add2(1:nbox_y)=y_axis
+plt_var_copy&y_add2(nbox_y+1)=y_axis(nbox_y-1)+1
+
+plt_var_copy&x_add2 = new((/nbox_x+2/),typeof(x_axis))
+plt_var_copy&x_add2(0)=x_axis(0)-1
+plt_var_copy&x_add2(1:nbox_x)=x_axis
+plt_var_copy&x_add2(nbox_x+1)=x_axis(nbox_x-1)+1
+
+
+;;; PLOT
+fig_name = "${fig_name}"
+wks      = gsn_open_wks("pdf",fig_name)
+;gsn_define_colormap(wks, "precip_11lev")
+
+setvalues NhlGetWorkspaceObjectId()
+   "wsMaximumSize": 6000000000
+end setvalues
+
+cmap1 = read_colormap_file("precip_diff_12lev")
+cmap2 = read_colormap_file("UKM_hadcrut")
+ncolor = 13
+mycmap = new((/ncolor,4/),"float")
+mycmap(0:ncolor/2-1,:) = cmap1(7:12:-1,:)
+mycmap(ncolor/2,0:2)   = namedcolor2rgb("white")
+mycmap(ncolor/2,3)     = 1.0
+mycmap(ncolor/2+1:,:)  = cmap2(6:11,:)
+delete([/cmap1,cmap2,ncolor/])
+
+plots_box  = new((/ndomain,nLeadTime,nlev/),"graphic")
+plots_npts = new((/ndomain,nLeadTime,nlev/),"graphic")
+dum1       = new((/ndomain,nLeadTime,nlev/),"graphic")
+
+res                     = True                   ; plot mods desired
+res@gsnDraw   = False
+res@gsnFrame  = False
+;res@tfDoNDCOverlay = True
+;res@gsnMaximize      = True                   ; maximize plot in frame
+res@vpWidthF         = 0.6
+res@vpHeightF        = 0.9
+
+res@tiMainFont = "times-roman"
+res@tiMainFontHeightF = 0.015
+res@tiMainFontThicknessF = 0.5
+res@tiMainJust           = "CenterLeft"
+res@tiMainPosition       = "Left"
+res@tiMainOffsetYF = -0.01
+
+res@gsnStringFont = "times-roman"
+res@gsnStringFontHeightF = 0.030
+res@gsnLeftString = ""
+res@gsnRightString = ""
+res@gsnRightStringOrthogonalPosF = 0.018
+
+res@tmXBLabelFont    = "times-roman"
+res@tmXTLabelFont    = "times-roman"
+res@tmYLLabelFont    = "times-roman"
+res@tmYRLabelFont    = "times-roman"
+res@tmXBLabelFontHeightF   = 0.018 
+res@tmXTLabelFontHeightF   = 0.018    
+res@tmYLLabelFontHeightF   = 0.018
+res@tmYRLabelFontHeightF   = 0.018
+
+res@tiXAxisFontHeightF        = 0.025
+res@tiYAxisFontHeightF        = 0.025
+
+shres=res
+shres@cnFillOn   = True
+shres@cnLinesOn  = False
+shres@cnLineLabelsOn = False
+shres@cnInfoLabelOn  = False
+shres@cnFillMode = "CellFill" ;"AreaFill" ;"CellFill" ;"RasterFill"
+shres@lbLabelBarOn = False
+shres@lbOrientation = "horizontal" ; "vertical"
+;shres@cnFillOpacityF       = 0.5
+
+tmXBLabels_str = new(nbox_x, "string")
+do i = 0, nbox_x-1
+   ;print("xbox_bdys = ["+xbox_bdys(i,0)+", "+xbox_bdys(i,1)+") m")
+   tmXBLabels_str(i)="["+xbox_bdys(i,0)+"~F18~-~F25~"+xbox_bdys(i,1)+")"
+end do
+tmYLLabels_str = new(nbox_y, "string")
+do i = 0, nbox_y-1
+   ;print("ybox_bdys = ["+ybox_bdys(i,0)+", "+ybox_bdys(i,1)+") m")
+   tmYLLabels_str(i)="["+ybox_bdys(i,0)+"~F18~-~F25~"+ybox_bdys(i,1)+")"
+end do
+
+shres@tmXBMode                = "Explicit"
+shres@tmXBValues              = x_axis
+shres@tmXBLabels              = tmXBLabels_str
+shres@trXMinF  = min(shres@tmXBValues) - 0.5
+shres@trXMaxF  = max(shres@tmXBValues) + 0.5
+shres@tmXBLabelJust   = "TopRight"
+shres@tmXBLabelAngleF = 45.
+
+shres@tmXTOn = False
+shres@tmYROn = False
+
+shres@tmYLMode                = "Explicit"
+shres@tmYLValues              = y_axis
+shres@tmYLLabels              = tmYLLabels_str
+if("${climatology_def}".eq."AllyearDJF") then
+   shres@trYMinF  = min(shres@tmYLValues(16:nbox_y-1-16)) - 0.5
+   shres@trYMaxF  = max(shres@tmYLValues(16:nbox_y-1-16)) + 0.5
+else if("${climatology_def}".eq."AllyearJJA") then
+   shres@trYMinF  = min(shres@tmYLValues(10:nbox_y-1-22)) - 0.5
+   shres@trYMaxF  = max(shres@tmYLValues(10:nbox_y-1-22)) + 0.5
+end if
+end if
+
+; used to mask the missing value
+shres@cnMissingValFillColor   = "Transparent" ; Transparent" ; "grey91"
+shres@cnMissingValFillPattern = 17   ; 0->solid ; If cnFillMode is set to RasterFill or CellFil only SolidFill is possible.
+shres@cnMissingValFillScaleF  = 0.8             ; increase the density of the fill pattern (default=1.0)
+shres@cnMissingValPerimOn     = False ; True            ; already turned on above
+shres@cnMissingValPerimColor  = shres@cnMissingValFillColor
+shres@cnMissingValPerimDashPattern = 1
+shres@cnMissingValPerimThicknessF  = 3.0
+
+
+cnres = shres
+cnres@cnFillOn  = False
+cnres@cnLinesOn = True
+cnres@cnLineColor = "grey"
+cnres@cnLineLabelsOn = True
+cnres@cnLineLabelBackgroundColor = "Transparent"
+cnres@cnLabelMasking             = True
+cnres@cnLineLabelFontColor       = cnres@cnLineColor
+cnres@cnInfoLabelOn  = False
+cnres@gsnContourPosLineDashPattern = 0
+cnres@gsnContourNegLineDashPattern = 1
+cnres@gsnContourZeroLineThicknessF = 3.0 ; 7.0 ; delete zero line
+cnres@cnLineThicknessF = 0.8 ; 3.0
+cnres@cnLineLabelDensityF   = 1.0 ;2.5               ; increase the number of line labels/line
+cnres@cnLineLabelInterval   = 1
+cnres@cnLineLabelFontHeightF = 0.02
+
+;cnres@cnLevelSelectionMode = "ManualLevels"
+;cnres@cnMinLevelValF  = 1000000.
+;cnres@cnMaxLevelValF  = 10000000.
+;cnres@cnLevelSpacingF = 1000000.
+cnres@cnLevelSelectionMode = "ExplicitLevels"
+cnres@cnLevels = (/1., 5., 10., 50., 100., 500., 1000./)
+cnres@cnLevels = cnres@cnLevels*10000
+;cnres@cnExplicitLineLabelsOn = True
+;cnres@cnLineLabelStrings = (/"1e4", "5e4", "1e5", "5e5", "1e6", "5e6", "1e7"/)
+
+lnres = True
+lnres@gsLineDashPattern = 2  ; Dashed line style
+lnres@gsLineColor = "purple"
+lnres@gsLineThicknessF = 2.0
+
+do idomain = 0, ndomain-1
+do iLeadTime = 0, nLeadTime-1
+do ilev = 0, nlev-1
+   if(idomain.eq.idomain_CONUS) then
+      if(iLeadTime.eq.iLeadTime_60min) then
+         shres@gsnLeftString = "(a)"
+      else if(iLeadTime.eq.iLeadTime_180min) then
+	 shres@gsnLeftString = "(e)"
+      else if(iLeadTime.eq.iLeadTime_360min) then
+         shres@gsnLeftString = "(i)"
+      end if
+      end if
+      end if
+   else if(idomain.eq.idomain_PNWCA) then
+      if(iLeadTime.eq.iLeadTime_60min) then
+         shres@gsnLeftString = "(b)"
+      else if(iLeadTime.eq.iLeadTime_180min) then
+         shres@gsnLeftString = "(f)"
+      else if(iLeadTime.eq.iLeadTime_360min) then
+         shres@gsnLeftString = "(j)"
+      end if
+      end if
+      end if
+   else if(idomain.eq.idomain_NorthEast) then
+      if(iLeadTime.eq.iLeadTime_60min) then
+         shres@gsnLeftString = "(c)"
+      else if(iLeadTime.eq.iLeadTime_180min) then
+         shres@gsnLeftString = "(g)"
+      else if(iLeadTime.eq.iLeadTime_360min) then
+         shres@gsnLeftString = "(k)"
+      end if
+      end if
+      end if
+   else if(idomain.eq.idomain_SouthEast) then
+      if(iLeadTime.eq.iLeadTime_60min) then
+         shres@gsnLeftString = "(d)"
+      else if(iLeadTime.eq.iLeadTime_180min) then
+         shres@gsnLeftString = "(h)"
+      else if(iLeadTime.eq.iLeadTime_360min) then
+         shres@gsnLeftString = "(l)"
+      end if
+      end if
+      end if
+   end if
+   end if
+   end if
+   end if
+   shres@gsnLeftString  = shres@gsnLeftString+" "+domain4stratification_list_NCL(idomain) 	 
+   shres@gsnRightString = "LT="+LeadTime_arrInt(iLeadTime)+" min"
+
+   if(domain4stratification_list_NCL(idomain).eq."CONUS") then
+      shres@tmYLOn = True 
+      shres@tiYAxisString  = "Distance to HRRR freezing level (0~S~o~N~C) [m]"
+   else
+      shres@tmYLOn = False
+   end if
+   shres@tiYAxisOn    = shres@tmYLOn
+   shres@tmYLLabelsOn = shres@tmYLOn
+
+   if(LeadTime_arrInt(iLeadTime).eq.360) then
+      shres@tmXBOn = True
+      shres@tiXAxisString  = "Radar beam diameter [m]"
+   else
+      shres@tmXBOn = False
+   end if
+   shres@tiXAxisOn    = shres@tmXBOn
+   shres@tmXBLabelsOn = shres@tmXBOn
+
+   shres@cnLevelSelectionMode = "ManualLevels"
+   shres@cnMinLevelValF  = -11.              
+   shres@cnMaxLevelValF  =  11.      
+   shres@cnLevelSpacingF =  2.
+   shres@cnFillPalette = mycmap;"precip_diff_12lev";"GreenMagenta16";"ViBlGrWhYeOrRe" ; "BlAqGrWh2YeOrReVi22"
+
+   plt_var = plt_var_copy
+   plt_var(1:nbox_y, 1:nbox_x) = (/omb_p50(idomain,iLeadTime,ilev,:,:)/)
+   plots_box(idomain,iLeadTime,ilev) = gsn_csm_contour(wks, plt_var, shres)
+   delete([/plt_var/])
+
+   dum1(idomain,iLeadTime,ilev) = gsn_add_polyline(wks, plots_box(idomain,iLeadTime,ilev), xx4line, yy4line, lnres) 
+
+   plt_var = plt_var_copy
+   plt_var(1:nbox_y, 1:nbox_x) = (/omb_npts(idomain,iLeadTime,ilev,:,:)/)
+   plots_npts(idomain,iLeadTime,ilev) = gsn_csm_contour(wks, plt_var, cnres)
+   delete([/plt_var/])
+
+   overlay(plots_box(idomain,iLeadTime,ilev),plots_npts(idomain,iLeadTime,ilev))
+
+   att_list = (/"tmXBOn","tmYLOn","tiXAxisString","tiYAxisString"/)
+   do kk = 0, dimsizes(att_list)-1
+      if(isatt(shres,att_list(kk))) then
+         delete(shres@\$att_list(kk)\$)
+      end if
+   end do
+   delete([/att_list/])
+end do
+end do
+end do
+
+
+;;; panel plots
+pres                    = True
+pres@gsnFrame = False
+pres@gsnPanelLabelBar   = True
+pres@pmLabelBarWidthF   = 0.59
+pres@pmLabelBarHeightF  = 0.03
+pres@gsnMaximize        = True
+pres@lbBoxLinesOn       = False
+pres@lbLabelFontHeightF = 0.012
+pres@pmLabelBarOrthogonalPosF = -.001           ; move whole thing down
+pres@pmLabelBarParallelPosF   = -0.03
+pres@lbTitleOn        = True                  ; turn on title
+pres@lbTitleFont      = "times-roman"
+pres@lbTitlePosition  = "Right"              ; title position
+pres@lbTitleDirection = "Across"             ; title direction
+pres@lbTitleFontHeightF= 0.010                ; make title smaller
+pres@lbTitleOffsetF    = 0.02
+pres@lbTitleString    = "~F25~Z~B4~MRMS~N~        ~F18~-~F25~Z~B4~HRRR~N~       , [dBZ], ${climatology_def:7:3}"
+pres@gsnPanelMainString = ""
+pres@gsnPanelScalePlotIndex = 1
+
+;pres@gsnPanelTop = 0.90    ; Push panel down to leave room for a top title
+pres@gsnPanelBottom = 0.16 ; Leave margin at the bottom
+;pres@gsnPanelLeft = 0.10   ; Leave margin on the left
+;pres@gsnPanelRight = 0.90  ; Leave margin on the right
+pres@gsnPanelYWhiteSpacePercent = 0.0  ; Reduce vertical white space
+pres@gsnPanelXWhiteSpacePercent = 0.0  ; Reduce horizontal white space
+
+
+;do idomain = 0, ndomain-1
+;do ilev = 0, nlev-1
+;   plots1d = plots_box(idomain,:,ilev)
+;   gsn_panel(wks,plots1d,(/2,3/),pres)
+;   frame(wks)
+;   delete([/plots1d/])
+;end do
+;end do
+
+do ilev = 0, nlev-1
+   plotsNd = plots_box(:,:,ilev)	
+   LeadTimeId4plot = (/3,4,5/)
+   nplot = ndomain*dimsizes(LeadTimeId4plot)
+   plots1d = new(nplot,"graphic")
+   j = -1
+   do i = 0, dimsizes(LeadTimeId4plot)-1
+   do idomain = 0, ndomain-1	   
+      j = j+1	   
+      plots1d(j) = plotsNd(idomain,LeadTimeId4plot(i))	   
+   end do
+   end do
+   gsn_panel(wks,plots1d,(/dimsizes(LeadTimeId4plot),ndomain/),pres)
+   frame(wks)
+   delete([/plots1d/])
+end do
+
+
+end
+
+EOF
+
+ncl ${ncl_name}
+[[ -f ${ncl_name} ]] && rm -rf ${ncl_name}

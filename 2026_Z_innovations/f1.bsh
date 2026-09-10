@@ -1,0 +1,469 @@
+#!/bin/bash -f
+
+cmd=$(basename $0)
+num_args=4
+
+usage() {
+   echo "Usage : $cmd AREA Hgrid_name Vgrid_name mask_name"
+   echo "        $cmd CONUS HRRR HRRR1and4kmAGL" 
+   echo -e "\tAREA: CONUS CA PNWCA"
+   echo -e "\tHgrid_name: HRRR"
+   echo -e "\tVgrid_name: HRRR1and4kmAGL"
+   echo -e "\tmask_name : CONUS PNWCA SouthEast NorthEast NorthWestEast"
+   echo -e "\tGridRadarInfo_file: /cw3e/mead/projects/cwp155/Scripts/OUT/HRRR_HRRR1and4kmAGL.GridRadarInfo.${mask_name}.nc"
+   echo ""
+   exit 2222
+}
+if [ $# -ne ${num_args} ] ; then usage ; fi
+
+AREA=$1        ; shift
+Hgrid_name=$1  ; shift
+Vgrid_name=$1  ; shift
+mask_name=$1
+
+
+### Folders
+fig_dir="${myscript}/Figures"
+out_dir="${myscript}/OUT"
+fix_dir="${myscript}/FIX"
+utl_dir="${myscript}/Utilities"
+scripts_dir="${myscript}/paper2026_Zomb/beamDiameter4HRRR"
+epoch=`date +"%s"`
+
+
+### grid radar information file
+GridRadarInfo_file="${out_dir}/${Hgrid_name}_${Vgrid_name}.GridRadarInfo.${mask_name}.nc"
+if [[ ! -f ${GridRadarInfo_file} ]]; then echo "ERROR: NO ${GridRadarInfo_file}"; exit 2222; fi
+
+
+### shapefile
+# US: https://www.weather.gov/gis/USStates
+CA_shapefile="${utl_dir}/NCL/CA_shapefiles/CA_Counties_TIGER2016.shp"
+if [[ ! -f ${CA_shapefile} ]]; then echo "ERROR: NO ${CA_shapefile}"; exit 2222; fi
+echo "CA Shapefile:  ${CA_shapefile}"
+
+US_shapefile="${utl_dir}/NCL/US_shapefiles/s_22mr22.shp"
+if [[ ! -f ${US_shapefile} ]]; then echo "ERROR: NO ${US_shapefile}"; exit 2222; fi
+echo "US Shapefile:  ${US_shapefile}"
+
+PNWCA_shapefile="${utl_dir}/NCL/domain_shapefiles/PNWCA.shp"
+NorthEast_shapefile="${utl_dir}/NCL/domain_shapefiles/NorthEast.shp"
+SouthEast_shapefile="${utl_dir}/NCL/domain_shapefiles/SouthEast.shp"
+
+
+### Create NCL
+ncl_name="${out_dir}/${cmd}.${epoch}.ncl"
+if [ -f ${ncl_name} ]; then rm -rf ${ncl_name}; fi
+
+cat > ${ncl_name} << EOF
+
+load "${utl_dir}/NCL/shapefile_utils_reverseXY.ncl"
+load "${utl_dir}/NCL/shapefile_utils_supplement.ncl"
+load "${utl_dir}/NCL/common_things.ncl"
+load "${utl_dir}/NCL/panel_two_sets.ncl"
+
+begin
+
+lev1d_AGL = (/1000.0, 4000.0/) ; [m]
+
+
+CA_shapefile        = "${CA_shapefile}"
+US_shapefile        = "${US_shapefile}"
+PNWCA_shapefile     = "${PNWCA_shapefile}"
+NorthEast_shapefile = "${NorthEast_shapefile}"
+SouthEast_shapefile = "${SouthEast_shapefile}"
+
+file_name = "${GridRadarInfo_file}" 
+print("READ file: "+file_name)
+infile = addfile(file_name,"r")
+
+; Dimension name and size
+dNames = getfiledimnames(infile)
+dSizes = getfiledimsizes(infile)
+;print(dNames+" = "+dSizes)
+do i = 0, dimsizes(dNames)-1
+   if(dNames(i).eq."nlon") then
+      nlon=dSizes(i)
+      continue 
+   else if(dNames(i).eq."nlat") then
+      nlat=dSizes(i)
+      continue 
+   else if(dNames(i).eq."nlev") then
+      nlev=dSizes(i)
+      continue 
+   else if(dNames(i).eq."radNameLen") then
+      radNameLen=dSizes(i)
+      continue 
+   else if(dNames(i).eq."nradMax") then
+      nradMax=dSizes(i)
+      continue 
+   end if
+   end if
+   end if
+   end if
+   end if
+end do
+; Check
+if(nradMax.gt.1) then
+   print("ERROR: nradMax > 1")
+   exit()
+end if
+
+lon2d  = infile->LON
+lat2d  = infile->LAT
+lev3d  = infile->LEV ; [m] above MSL
+; Check
+tmp1   = dimsizes(lon2d)
+tmp2   = dimsizes(lev3d)
+if((tmp1(1).ne.nlon) .or. (tmp1(0).ne.nlat) .or. (tmp2(0).ne.nlev)) then
+   print("ERROR: nlon / nlat / nlev is wrong")
+   exit()
+end if
+delete([/tmp1,tmp2/])
+if(dimsizes(lev1d_AGL).ne.nlev) then
+   print("ERROR: nlev is wrong")
+   exit()
+end if
+
+MASK   = infile->MASK
+do ilev = 0, nlev-1
+   tmp = num(MASK(ilev,:,:).eq.1)
+   print("Lev = "+lev1d_AGL(ilev)+"[m] AGL: # of pts = "+tmp)
+   delete(tmp)
+end do
+
+beamWidth = infile->radbeamW(:,:,:,0) ; [m], (nlev, nlat, nlon, nradMax)
+; Convert to km
+beamWidth = beamWidth/1000.0             ; [km]
+;print("beamWidth: # of valid = "+num(.not.ismissing(beamWidth)))
+
+
+;;; create plot
+fig_name = "${fig_dir}/${Hgrid_name}_${Vgrid_name}.beamDiameter4grid.${AREA}.mask_${mask_name}"
+wks      = gsn_open_wks("pdf",fig_name)
+;gsn_define_colormap(wks, "precip3_16lev") ; WhiteBlueGreenYellowRed") ;precip3_16lev")
+
+setvalues NhlGetWorkspaceObjectId()
+   "wsMaximumSize": 600000000
+end setvalues
+
+nums_fig = nlev
+mpid = new(nlev, "graphic")
+shid = new(nlev, "graphic")
+
+res           = True
+res@gsnDraw   = False
+res@gsnFrame  = False
+
+res@tiMainFont = "times-roman"
+res@tiMainFontHeightF = 0.015
+res@tiMainFontThicknessF = 0.5
+res@tiMainJust           = "CenterLeft"
+res@tiMainPosition       = "Left"
+res@tiMainOffsetYF = -0.01
+
+res@gsnStringFont = "times-roman"
+res@gsnStringFontHeightF = 0.025 ; 0.015
+res@gsnLeftStringOrthogonalPosF = -.002
+res@gsnLeftString = ""
+res@gsnRightString = ""
+
+res@tmXBLabelFont    = "times-roman"
+res@tmYLLabelFont    = "times-roman"
+res@tmXBLabelFontHeightF   = 0.020     ; X axis labels.
+res@tmYLLabelFontHeightF   = 0.020
+
+;---Necessary for contours to be overlaid correctly on WRF projection
+res@tfDoNDCOverlay = False
+res@gsnAddCyclic          = False         ; data is regional
+
+
+;---Map plot
+map_res                      = res
+map_res@gsnFrame             = False
+map_res@gsnDraw              = False
+
+;---Set map resources based on projection on WRF output file
+;map_res = wrf_map_resources(infile_map,map_res)
+map_res@mpFillOn                    = False
+map_res@mpDataBaseVersion           = "MediumRes"; "HighRes"
+map_res@mpUSStateLineColor          = "grey"
+map_res@mpPerimLineColor            = "Black"
+map_res@mpNationalLineColor         = "Black"
+map_res@mpLimbLineColor             = "Black"
+map_res@mpGridLineColor             = "Black"
+map_res@mpGeophysicalLineColor      = "Black"
+map_res@mpUSStateLineThicknessF     = 1.0 ; 2.0
+map_res@mpNationalLineThicknessF    = 1.0 ; 3.0
+map_res@mpGeophysicalLineThicknessF = 1.0 ; 3.0
+map_res@mpOutlineOn           = True                ; turn on map outline
+map_res@mpOutlineDrawOrder    = "Draw" ; "PostDraw"           ; Draw map outlines last
+map_res@mpOutlineBoundarySets       = "National"   ; turn on country boundaries
+map_res@mpOutlineSpecifiers         = (/"United States : States"/)
+map_res@pmTickMarkDisplayMode = "Always"             ; Turn on map tickmarks
+
+map_res@tmXBOn = False    ; Turn off bottom tickmarks/labels
+map_res@tmYLOn = False    ; Turn off left tickmarks/labels
+map_res@tmXTOn = False    ; Turn off top tickmarks/labels
+map_res@tmYROn = False    ; Turn off right tickmarks/labels
+
+; set plot domain
+min_lat = min(lat2d)+1.9
+max_lat = max(lat2d)-2.
+min_lon = min(lon2d)+6.0
+max_lon = max(lon2d)-3.0
+
+; further ZOOM in California
+if("${AREA}".eq."CA") then
+   get_shapefile_latlon(CA_shapefile,min_lat,max_lat,min_lon,max_lon)
+   min_lat = min_lat-0.1 ; add some wiggle room
+   max_lat = max_lat+0.1
+   min_lon = min_lon-0.1
+   max_lon = max_lon+0.1
+else if("${AREA}".eq."PNWCA") then
+   get_shapefile_latlon(CA_shapefile,min_lat,max_lat,min_lon,max_lon)
+   max_lat = 50.0
+end if
+end if
+
+; mpLimitMode="LatLon": mpMinLatF/mpMaxLatF/mpMinLonF/mpMaxLonF
+map_res@mpLimitMode         = "Corners"   ; corner method of zoom,
+map_res@mpLeftCornerLatF    = min_lat     ; left corner
+map_res@mpLeftCornerLonF    = min_lon     ; left corner
+map_res@mpRightCornerLatF   = max_lat     ; right corner
+map_res@mpRightCornerLonF   = max_lon     ; right corner
+
+do ilev = 0, nlev-1
+   ;map_res@gsnLeftString = "lev = "+lev1d_AGL(ilev)+" [m] AGL"
+   mpid(ilev) = gsn_csm_map(wks,map_res)
+   delete(map_res@gsnLeftString)
+end do
+
+
+;;; shaded plot
+shres = res
+shres@cnFillOn             = True
+;shres@cnFillMode           = "RasterFill"
+shres@cnLinesOn            = False
+shres@cnLineLabelsOn       = False
+shres@cnInfoLabelOn        = False
+;shres@cnFillPalette        = cmap ; "WhBlGrYeRe" ; "precip4_11lev"
+shres@lbLabelBarOn = False
+shres@lbOrientation        = "Horizontal";"Vertical"
+;shres@lbTitleString        = "MoistFC"
+shres@lbTitlePosition      = "Top";"Left"
+shres@lbTitleFontHeightF   = 0.02
+shres@lbLabelFontHeightF   = 0.015
+shres@cnFillDrawOrder      = "Predraw"
+
+shres@cnMissingValPerimOn     = False ; True            ; turn on the missing value perimeter
+shres@cnMissingValPerimColor  = "red"           ; outline the perimeter red
+shres@cnMissingValFillPattern = "0" ; 11               ; choose fill pattern 0 (solid fill)
+shres@cnMissingValFillColor   = "grey91" ; "azure"; "blue"          ; color fill missing areas blue
+shres@cnMissingValFillScaleF  = 1.0
+
+;shres@cnLevelSelectionMode = "ExplicitLevels"
+;shres@cnLevels     = (/0.5/)
+;shres@cnFillColors = (/"transparent", "purple"/) 
+
+shres@cnLevelSelectionMode = "ManualLevels"
+shres@cnMinLevelValF       =   0.25 
+shres@cnMaxLevelValF       =   3.75
+shres@cnLevelSpacingF      =   0.25
+
+shres@cnFillPalette        = "cb_9step"
+; These color indexes are for workstation. Need to deduct 2
+shres@cnFillColors = (/8,10,12,14, 24,26,28,30, 40,42,44,46, 56,58,60,62/) 
+shres@cnFillColors = shres@cnFillColors - 2
+
+
+do ilev = 0, nlev-1
+
+   x_stride   = 1
+   y_stride   = x_stride
+   plt_var = beamWidth(ilev,::y_stride,::x_stride)
+   plt_var@lon2d = lon2d(::y_stride,::x_stride)
+   plt_var@lat2d = lat2d(::y_stride,::x_stride) 
+
+   shid(ilev) = gsn_csm_contour(wks,plt_var,shres)
+   delete([/plt_var/])
+
+   overlay(mpid(ilev),shid(ilev))
+end do
+
+
+;;; Add lines
+dum1 = new((/nlev,3/),"graphic")
+lres             = True
+lres@gsLineThicknessF = 4.0
+lres@tfPolyDrawOrder  = "PostDraw"
+do ilev = 0, nlev-1
+do i    = 0, 2
+   if(i.eq.0) then
+      shapefile_name = PNWCA_shapefile
+      lres@gsLineColor = "blue" ; "blueviolet"
+   else if(i.eq.1) then
+      shapefile_name = NorthEast_shapefile
+      lres@gsLineColor = "forestgreen" ; "sienna4" ; "cyan1" ; "coral4" ; "gold1"
+   else if(i.eq.2) then
+      shapefile_name = SouthEast_shapefile
+      lres@gsLineColor = "red" ; "brown1"
+   end if
+   end if
+   end if
+   dum1(ilev,i) = gsn_add_shapefile_polylines(wks,mpid(ilev),shapefile_name,lres)
+   delete([/shapefile_name/])
+end do
+end do
+
+
+;;; Add radars
+radar4plt_names = (/"KDMX","KTLX","KBBX","KGYX","KMQT","KLTX"/)
+nradar4plt      = dimsizes(radar4plt_names)
+radar4plt_lats  = new(nradar4plt,"float")
+radar4plt_lons  = new(nradar4plt,"float")
+do i = 0, nradar4plt-1
+   radar_use = radar4plt_names(i)
+   if(radar_use.eq."KDMX") then
+      radar4plt_lats(i)  = 41.73111
+      radar4plt_lons(i)  = -93.72278
+   else if(radar_use.eq."KTLX") then
+      radar4plt_lats(i)  = 35.33306
+      radar4plt_lons(i)  = -97.2775
+   else if(radar_use.eq."KBBX") then
+      radar4plt_lats(i)  = 39.49611
+      radar4plt_lons(i)  = -121.63167
+   else if(radar_use.eq."KGYX") then
+      radar4plt_lats(i)  = 43.89139
+      radar4plt_lons(i)  = -70.25694
+   else if(radar_use.eq."KMQT") then
+      radar4plt_lats(i)  = 46.53111
+      radar4plt_lons(i)  = -87.54833
+   else if(radar_use.eq."KLTX") then
+      radar4plt_lats(i)  = 33.98917
+      radar4plt_lons(i)  = -78.42917
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+   delete([/radar_use/])
+end do
+
+pmres = True
+pmres@gsMarkerIndex    = 5
+pmres@gsMarkerColor    = "white" ; "darkviolet" ; "darkorange1" ; "cyan" ; "yellow"; "lawngreen" ; "cyan" ; "purple"
+pmres@gsMarkerSizeF    = 0.01
+pmres@gsMarkerThicknessF = 3.5
+
+txres               = True
+txres@txFont        = "times-bold" ; "times-roman"
+txres@txFontHeightF = 0.008
+txres@txFontColor   = "black" 
+
+dot = new(1000,"graphic")
+txt = new(1000,"graphic")
+i = -1
+do iradar    = 0, nradar4plt-1
+do ilev = 0, nlev-1
+   rad_name= radar4plt_names(iradar) 
+   rad_lon = radar4plt_lons(iradar)
+   rad_lat = radar4plt_lats(iradar)
+
+   i = i+1
+   dot(i) = gsn_add_polymarker(wks,mpid(ilev),rad_lon,rad_lat,pmres)
+
+   if(rad_name.eq."KBBX") then
+      rad_lon = rad_lon+0.8
+      rad_lat = rad_lat+1.2
+   else if(rad_name.eq."KTLX") then
+      rad_lon = rad_lon+0.8
+      rad_lat = rad_lat-1.3
+   else if(rad_name.eq."KDMX") then
+      rad_lon = rad_lon
+      rad_lat = rad_lat+1.3
+   else if(rad_name.eq."KMQT") then
+      rad_lon = rad_lon
+      rad_lat = rad_lat+1.3
+   else if(rad_name.eq."KGYX") then
+      rad_lon = rad_lon+2.8
+      rad_lat = rad_lat
+   else if(rad_name.eq."KLTX") then
+      rad_lon = rad_lon+2.3
+      rad_lat = rad_lat-1.
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+
+   txt(i) = gsn_add_text(wks,mpid(ilev),rad_name,rad_lon,rad_lat,txres)
+
+   delete([/rad_name,rad_lon,rad_lat/])
+end do
+end do
+
+
+;;; panel plots
+pres                    = True
+pres@gsnFrame = False
+pres@gsnPanelLabelBar   = True
+pres@pmLabelBarWidthF   = 0.7
+pres@pmLabelBarHeightF  = 0.04
+pres@pmLabelBarOrthogonalPosF = -0.015
+pres@gsnMaximize        = True
+pres@lbBoxLinesOn       = False
+pres@lbTitleFont        = "times-roman"
+pres@lbLabelFontHeightF = 0.013
+pres@lbTitlePosition    = "Bottom"
+pres@lbTitleString      = "Radar beam diameter [km]: proxy of radar vertical resolution"
+pres@lbTitleFontHeightF = 0.015 
+;pres@lbTitleOffsetF     =
+
+gsn_panel(wks,mpid(0),(/1,1/),pres)
+frame(wks)
+gsn_panel(wks,mpid(1),(/1,1/),pres)
+
+;fig_per_column   = 2
+;column_per_frame = 2
+;fig_per_frame    = fig_per_column*column_per_frame
+;do ifig = 0, nums_fig-1, fig_per_frame
+;   do icol = 0, column_per_frame-1
+;      id_beg = ifig+icol*fig_per_column
+;      id_end = id_beg+fig_per_column-1
+;      fig_width = 1.0/column_per_frame
+;      pres@gsnPanelLeft = 0.0+icol*fig_width
+;      pres@gsnPanelRight = pres@gsnPanelLeft+fig_width
+;      if(id_beg.le.(nums_fig-1)) then
+;         if(id_end.le.(nums_fig-1)) then
+;            gsn_panel(wks,mpid(id_beg:id_end),(/fig_per_column,1/),pres)
+;         else
+;            gsn_panel(wks,mpid(id_beg:nums_fig-1),(/fig_per_column,1/),pres)
+;         end if
+;      end if
+;
+;   end do ; icol
+;   frame(wks)
+
+  ;getvalues mpid(0)
+  ;   "vpXF"                  : vpXF
+  ;   "vpYF"                  : vpYF
+  ;   "vpWidthF"              : vpWidthF
+  ;   "vpHeightF"             : vpHeightF
+  ;end getvalues
+  ;print("[vpx,vpy,vpw,vph]=["+vpXF+","+vpYF+","+vpWidthF+","+vpHeightF+"]")
+  ;delete([/vpXF,vpYF,vpWidthF,vpHeightF/])
+
+
+;end do ; ifig
+
+
+
+end
+
+EOF
+
+ncl ${ncl_name}
+#[[ -f ${ncl_name} ]] && rm -rf ${ncl_name}
