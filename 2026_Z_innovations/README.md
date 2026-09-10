@@ -1,3 +1,30 @@
+# Range-dependent Radar Reflectivity Innovations over the Contiguous United States
+
+This repository contains the plotting scripts and execution commands used to generate the figures in the manuscript:
+
+> **Range-dependent Radar Reflectivity Innovations over the Contiguous United States**  
+> *Authors: [Author Names]*  
+> *DOI / Publication: [Link or DOI to paper]*  
+
+---
+
+## 📦 Data Availability
+
+The datasets required to run these scripts are archived on Zenodo:
+* **Zenodo Dataset DOI:** [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+
+---
+
+## 🚀 Quick Start & Environment
+
+Ensure you have the required environment set up before running the scripts:
+
+```bash
+# Example: clone repository and install dependencies
+git clone [https://github.com/your-username/your-repo-name.git](https://github.com/your-username/your-repo-name.git)
+cd your-repo-name
+pip install -r requirements.txt   # or conda env create -f environment.yml
+
 This folder includes **plotting scripts** used in our manuscript: Range-dependent Radar Reflectivity Innovations over the Contiguous United States.\
 Associated **datasets** are stored in Zenodo.
 
