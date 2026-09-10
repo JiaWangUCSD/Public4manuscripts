@@ -1,4 +1,4 @@
-This folder includes **scripts** used in the manuscript: Range-dependent Radar Reflectivity Innovations over the Contiguous United States.
+This folder includes **plotting scripts** used in the manuscript: Range-dependent Radar Reflectivity Innovations over the Contiguous United States.
 Associated **datasets** are stored in Zenodo.
 
 Five figures in the manuscript:
