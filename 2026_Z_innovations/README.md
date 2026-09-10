@@ -11,11 +11,11 @@ The scripts in this repository reproduce the following figures from the manuscri
 
 | Figure        | Description                                                                                                        | Script | Dataset | Command |
 | ------------- | ------------------------------------------------------------------------------------------------------------------ | ------ | ------- | ------- |
-| **Figure 1b** | Radar beam diameter at 1 km AGL                                                                                    | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`  | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`   | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`   |
-| **Figure 2**  | Spatial distribution of median reflectivity innovations during summer and winter                                   | `...`  | `...`   | `...`   |
-| **Figure 3**  | Median reflectivity innovations as a function of radar beam diameter and distance from the HRRR freezing level     | `...`  | `...`   | `...`   |
-| **Figure 4**  | Median observed, analyzed, and simulated reflectivity                                                              | `...`  | `...`   | `...`   |
-| **Figure 5**  | Averaged observation-minus-background differences in reflectivity and composite reflectivity for two winter storms | `...`  | `...`   | `...`   |
+| **Figure 1b** | Radar beam diameter at 1 km AGL                                                                                    | `f1.bsh`  | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`   | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`   |
+| **Figure 2**  | Spatial distribution of median reflectivity innovations during summer and winter                                   | `f2.bsh`  | `...`   | `...`   |
+| **Figure 3**  | Median reflectivity innovations as a function of radar beam diameter and distance from the HRRR freezing level     | `f3.bsh`  | `...`   | `...`   |
+| **Figure 4**  | Median observed, analyzed, and simulated reflectivity                                                              | `f4.bsh`  | `...`   | `...`   |
+| **Figure 5**  | Averaged observation-minus-background differences in reflectivity and composite reflectivity for two winter storms | `f5.bsh`  | `...`   | `...`   |
 
 ## Data Availability
 
