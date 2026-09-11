@@ -22,6 +22,6 @@ The scripts in this repository reproduce the following figures from the manuscri
 
 The datasets required to reproduce the manuscript figures are archived on Zenodo:
 
-**Zenodo:** [DOI / link]
+**Zenodo:** https://zenodo.org/records/22698766
 
 
