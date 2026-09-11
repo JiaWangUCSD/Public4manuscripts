@@ -23,7 +23,7 @@ The scripts in this repository reproduce the following figures from the manuscri
 The derived datasets required to reproduce the figures are archived in the UC San Diego Library Digital Collections
 > Wang, J., Zheng, M., Rutz, J., Delle Monache, L., & Ralph, F. M. (2026). Data from: Range-dependent Radar Reflectivity Innovations over the Contiguous United States. UC San Diego Library Digital Collections. https://doi.org/10.6075/J0D50NZ9
 
-**NOTE:** Due to the internal data curation process, the datasets will not be fully available until a few weeks. In the meantime, the datasets are temporarily available through Zenodo.
+**NOTE:** Due to the internal data curation process, the datasets will not be fully available through UC San Diego Library Digital Collections until a few weeks. In the meantime, the datasets are temporarily available through Zenodo.
 
 **Zenodo:** https://zenodo.org/records/22698766
 
