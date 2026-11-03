@@ -2,11 +2,11 @@
 # Plot climatology OmB of mdBZ
 
 cmd=$(basename $0)
-num_args=9
+num_args=10
 
 usage() {
    echo ""
-   echo "Usage : $cmd MRMS_mdBZ_type MRMS_Z_type MRMS_P_type climatology_def opt4thresh var4stats minNpts4season main_f90 domain4stratification_list"
+   echo "Usage : $cmd MRMS_mdBZ_type MRMS_Z_type MRMS_P_type climatology_def opt4thresh var4stats minNpts4season main_f90 var4stratification domain4stratification_list"
    echo -e "\tMRMS_mdBZ_type : MergedReflectivityQCComposite MergedReflectivityQComposite"
    echo -e "\tMRMS_Z_type    : MergedReflectivityQC"
    echo -e "\tMRMS_P_type    : PrecipRate"
@@ -16,6 +16,7 @@ usage() {
    echo -e "\tminNpts4season : 0 100 200"
    echo -e "\tmain_f90       : calc.stats.ZPH.v1.f90 -> O > Thresh && B > Thresh"
    echo -e "\t                 calc.stats.ZPH.v2.f90 -> O > Thresh || B > Thresh"
+   echo -e "\tvar4stratification        : radRange"
    echo -e "\tdomain4stratification_list: xxx xxx"
    echo -e "\t                            CONUS PNWCA NorthEast SouthEast NorthWestEast"
    echo " "
@@ -31,10 +32,12 @@ opt4thresh=$1        ; shift
 var4stats=$1         ; shift
 minNpts4season=$1    ; shift
 main_f90=$1          ; shift
+var4stratification=$1; shift
 domain4stratification_list=("${@}")
 
 
-if [[ ! "${var4stats}" =~ ^(Zconus)$ ]]; then echo "ERROR: var4stats=${var4stats} is illegal"; exit 2222; fi
+if [[ ! "${var4stats}" =~ ^(Zconus)$ ]]; then echo "ERROR: var4stats=${var4stats} is illegal"; exit 222; fi
+if [[ ! "${var4stratification}" =~ ^(radRange)$ ]]; then echo "ERROR: var4stratification=${var4stratification} is illegal"; exit 222; fi
 
 # When npts < minNpts, do not plot OmB
 minNpts4year=$((minNpts4season*4))
@@ -76,14 +79,14 @@ epoch=`date +"%s"`
 #infile_name="${out_dir}/results4${main_f90}/${filename_p1}.OmBhrrr.Climatology_${climatology_def}.EveryLeadTime.${filename_p2}.opt4thresh_${opt4thresh}.fromFortran.nc"
 declare -a file_list
 for domain4stratification in "${domain4stratification_list[@]}"; do
-    file_name="${out_dir}/${filename_p1}.OmBhrrr.Climatology_${climatology_def}.EveryLeadTime.${filename_p2}.opt4thresh_${opt4thresh}.${domain4stratification}.fromFortran.nc"
+    file_name="${out_dir}/${filename_p1}.OmBhrrr.Climatology_${climatology_def}.EveryLeadTime.${filename_p2}.opt4thresh_${opt4thresh}.${domain4stratification}.${var4stratification}.fromFortran.nc"
     if [[ ! -f ${file_name} ]]; then echo "ERROR: no ${file_name}"; exit 2222; fi
     file_list+=("${file_name}")
 done
 
 
 ### Figure
-fig_name="${fig_dir}/$(basename ${file_name} .${domain4stratification}.fromFortran.nc).stats_${var4stats}.minNpts${minNpts}.fromFortran"
+fig_name="${fig_dir}/$(basename ${file_name} .${domain4stratification}.fromFortran.nc).stats_${var4stats}.${var4stratification}.minNpts${minNpts}.fromFortran"
 [[ -f ${fig_name}.pdf ]] && rm -rf ${fig_name}.pdf
 
 
@@ -139,6 +142,7 @@ minNpts            = ${minNpts}
 nlev4mdbzOmB_shouldBe = ${nlev4mdbzOmB_shouldBe}
 nlev4zOmB_shouldBe    = ${nlev4zOmB_shouldBe}
 nlev4Zconus_shouldBe  = ${nlev4Zconus_shouldBe}
+var4stratification    = "${var4stratification}"
 
 CAshape_file = "${CAshape_file}"
 USshape_file = "${USshape_file}"
@@ -173,12 +177,10 @@ infile    = addfile(file_name, "r")
 dim_sizes = getfiledimsizes(infile)   ; Returns an array of sizes
 dim_names = getfiledimnames(infile)
 do i = 0, dimsizes(dim_names)-1
-   if(dim_names(i).eq."beamDiameter") then
-      nbins_beamDiameter  = dim_sizes(i)
+   if(dim_names(i).eq."strat") then
+      nbins_strat_xaxis  = dim_sizes(i)
    else if(dim_names(i).eq."dist2freezing") then
       nbins_dist2freezing = dim_sizes(i)
-   else if(dim_names(i).eq."radarName") then
-      nbins_radarName     = dim_sizes(i)
    else if(dim_names(i).eq."x") then
       nx                  = dim_sizes(i)
    else if(dim_names(i).eq."y") then
@@ -187,7 +189,6 @@ do i = 0, dimsizes(dim_names)-1
       nlev                = dim_sizes(i)   
    else if(dim_names(i).eq."LeadTime") then
       nLeadTime           = dim_sizes(i)      
-   end if
    end if
    end if
    end if
@@ -206,6 +207,7 @@ lev1d  = infile->XLEV
 lat2d  = infile->XLAT
 lon2d  = infile->XLONG
 LeadTime_arrInt = infile->LeadTime ; [minutes]
+strat_xaxis_midpoint = infile->strat ; units, long_name, source_variable, scale_applied, bin_min, bin_width
 delete([/infile/])
 
 do iLeadTime = 0, nLeadTime-1
@@ -232,8 +234,8 @@ end do
 
 ;;; Variables
 var4read_list = (/"${var4stats}_p50", "${var4stats}_npts"/)
-omb_p50  = new((/ndomain,nLeadTime,nlev,nbins_dist2freezing,nbins_beamDiameter/),"float")
-omb_npts = new((/ndomain,nLeadTime,nlev,nbins_dist2freezing,nbins_beamDiameter/),"integer")
+omb_p50  = new((/ndomain,nLeadTime,nlev,nbins_dist2freezing,nbins_strat_xaxis/),"float")
+omb_npts = new((/ndomain,nLeadTime,nlev,nbins_dist2freezing,nbins_strat_xaxis/),"integer")
 
 do idomain = 0, ndomain-1
    file_name = file_list_NCL(idomain) 
@@ -243,12 +245,10 @@ do idomain = 0, ndomain-1
    dim_sizes = getfiledimsizes(infile)   ; Returns an array of sizes
    dim_names = getfiledimnames(infile)
    do i = 0, dimsizes(dim_names)-1
-      if(dim_names(i).eq."beamDiameter") then
-         nbins_beamDiameter_in  = dim_sizes(i)
+      if(dim_names(i).eq."strat") then
+         nbins_strat_xaxis_in   = dim_sizes(i)
       else if(dim_names(i).eq."dist2freezing") then
          nbins_dist2freezing_in = dim_sizes(i)
-      else if(dim_names(i).eq."radarName") then
-         nbins_radarName_in     = dim_sizes(i)
       else if(dim_names(i).eq."x") then
          nx_in                  = dim_sizes(i)
       else if(dim_names(i).eq."y") then
@@ -263,16 +263,13 @@ do idomain = 0, ndomain-1
       end if
       end if
       end if
-      end if
    end do
    delete([/dim_sizes,dim_names/])
-   ;if(nbins_beamDiameter.ne.nbins_beamDiameter_in .or. nbins_dist2freezing.ne.nbins_dist2freezing_in .or. nbins_radarName_in.ne.nbins_radarName .or. nx.ne.nx_in .or. ny.ne.ny_in .or. nlev.ne.nlev_in .or. nLeadTime.ne.nLeadTime_in) then
-    if(nbins_beamDiameter.ne.nbins_beamDiameter_in .or. nbins_dist2freezing.ne.nbins_dist2freezing_in .or. nx.ne.nx_in .or. ny.ne.ny_in .or. nlev.ne.nlev_in .or. nLeadTime.ne.nLeadTime_in) then
+   if(nbins_strat_xaxis.ne.nbins_strat_xaxis_in .or. nbins_dist2freezing.ne.nbins_dist2freezing_in .or. nx.ne.nx_in .or. ny.ne.ny_in .or. nlev.ne.nlev_in .or. nLeadTime.ne.nLeadTime_in) then
       print("ERROR: dims are wrong")	   
       exit()
    end if
-   ;delete([/nbins_beamDiameter_in,nbins_dist2freezing_in,nbins_radarName_in,nx_in,ny_in,nlev_in,nLeadTime_in/])
-    delete([/nbins_beamDiameter_in,nbins_dist2freezing_in,nx_in,ny_in,nlev_in,nLeadTime_in/])
+   delete([/nbins_strat_xaxis_in,nbins_dist2freezing_in,nx_in,ny_in,nlev_in,nLeadTime_in/])
 
    lev1d_in  = infile->XLEV
    lat2d_in  = infile->XLAT
@@ -324,17 +321,23 @@ print("Npt      (climatology): [min,avg,max] = ["+min(omb_npts)+","+avg(omb_npts
 
 
 ;;; boundaries for the box
-nbox_x = nbins_beamDiameter
+nbox_x = nbins_strat_xaxis 
 xbox_bdys = new((/nbox_x,2/),"float")
-xbox_bdys(0,0) = 0.0
-xbox_bdys(0,1) = xbox_bdys(0,0)+0.25
-do i = 1, nbox_x-1
-   xbox_bdys(i,0) = xbox_bdys(i-1,1)
-   xbox_bdys(i,1) = xbox_bdys(i,0)+0.25
-end do
-xbox_bdys = xbox_bdys*1000.0 ; [m]
 do i = 0, nbox_x-1
-   print("xbox_bdys = ["+xbox_bdys(i,0)+", "+xbox_bdys(i,1)+") m")
+   if(i.eq.0) then
+      xbox_bdys(i,0) = strat_xaxis_midpoint@bin_min 
+   else
+      xbox_bdys(i,0) = xbox_bdys(i-1,1)
+   end if
+   xbox_bdys(i,1) = xbox_bdys(i,0)+strat_xaxis_midpoint@bin_width
+   if(((xbox_bdys(i,0)+xbox_bdys(i,1))/2.0).ne.strat_xaxis_midpoint(i)) then
+       print("ERROR: X-axis of stratification is not correct")
+       exit()
+   end if
+end do
+
+do i = 0, nbox_x-1
+   print("xbox_bdys = ["+xbox_bdys(i,0)+", "+xbox_bdys(i,1)+") "+strat_xaxis_midpoint@units)
    ;tmXBLabels_str(i)="["+xbox_bdys(i,0)+"~F18~-~F25~"+xbox_bdys(i,1)+")"
 end do
 
@@ -466,7 +469,11 @@ shres@tmXBMode                = "Explicit"
 shres@tmXBValues              = x_axis
 shres@tmXBLabels              = tmXBLabels_str
 shres@trXMinF  = min(shres@tmXBValues) - 0.5
-shres@trXMaxF  = max(shres@tmXBValues) + 0.5
+if(strat_xaxis_midpoint@source_variable.eq."radRange") then
+   shres@trXMaxF  = max(shres@tmXBValues(:nbox_x-1-4)) + 0.5
+else
+   shres@trXMaxF  = max(shres@tmXBValues) + 0.5
+end if
 shres@tmXBLabelJust   = "TopRight"
 shres@tmXBLabelAngleF = 45.
 
@@ -588,7 +595,12 @@ do ilev = 0, nlev-1
 
    if(LeadTime_arrInt(iLeadTime).eq.360) then
       shres@tmXBOn = True
-      shres@tiXAxisString  = "Radar beam diameter [m]"
+      if(strat_xaxis_midpoint@source_variable.eq."radRange") then
+         shres@tiXAxisString = "Slant range"
+      else
+         shres@tiXAxisString = strat_xaxis_midpoint@source_variable
+      end if
+      shres@tiXAxisString  = shres@tiXAxisString+" ["+strat_xaxis_midpoint@units + "]"; "Radar beam diameter [m]"
    else
       shres@tmXBOn = False
    end if
