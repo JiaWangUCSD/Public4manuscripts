@@ -1,0 +1,877 @@
+#!/bin/bash -f
+# Plot climatology OmB of mdBZ
+
+cmd=$(basename $0)
+num_args=9
+
+usage() {
+   echo ""
+   echo "Usage : $cmd MRMS_mdBZ_type MRMS_Z_type MRMS_P_type climatology_def_list_raw opt4thresh var4stats_list_raw minNpts4season main_f90 domain4stratification"
+   echo -e "\tMRMS_mdBZ_type : MergedReflectivityQCComposite MergedReflectivityQComposite"
+   echo -e "\tMRMS_Z_type    : MergedReflectivityQC"
+   echo -e "\tMRMS_P_type    : PrecipRate"
+   echo -e "\tclimatology_def_list_raw: Comma-separated (e.g., 'AllyearJJA,AllyearDJF' 'case2021Oct,case2026Jan')" 
+   echo -e "\t\t\t          AllyearAllmonth AllyearDJF AllyearMAM AllyearJJA AllyearSON" 
+   echo -e "\t\t\t          case2021Oct case2026Jan"
+   echo -e "\topt4thresh     : 1-"
+   echo -e "\tvar4stats_list_raw: Comma-separated (e.g., 'zOmB,mdbzOmB')"
+   echo -e "\t\t\t           : mdbzOmB zOmB mdbzO mdbzB zO zB hrrr_0degCHgt"
+   echo -e "\tminNpts4season : 0 100 200"
+   echo -e "\tmain_f90       : calc.stats.ZPH.v1.f90 -> O > Thresh && B > Thresh"
+   echo -e "\t                 calc.stats.ZPH.v2.f90 -> O > Thresh || B > Thresh"
+   echo -e "\tdomain4stratification: CONUS PNWCA SouthEast NorthEast NorthWestEast"
+   echo " "
+   exit 2222
+}
+if [[ $# -ne ${num_args} ]] ; then usage ; fi
+
+MRMS_mdBZ_type=$1             ; shift
+MRMS_Z_type=$1                ; shift
+MRMS_P_type=$1                ; shift
+climatology_def_list_raw=$1   ; shift
+opt4thresh=$1                 ; shift
+var4stats_list_raw=$1         ; shift
+minNpts4season=$1             ; shift
+main_f90=$1                   ; shift
+domain4stratification=$1 
+
+OLD_IFS="${IFS}"
+IFS=',' read -r -a climatology_def_list <<< "${climatology_def_list_raw}"
+IFS=',' read -r -a var4stats_list       <<< "${var4stats_list_raw}"
+IFS="${OLD_IFS}"
+unset climatology_def_list_raw var4stats_list_raw
+
+for var4stats in "${var4stats_list[@]}"; do
+    if [[ ! "${var4stats}" =~ ^(mdbzOmB|zOmB|mdbzO|mdbzB|zO|zB|hrrr_0degCHgt)$ ]]; then echo "ERROR: var4stats=${var4stats} is illegal"; exit 2222; fi
+done
+
+# When npts < minNpts, do not plot OmB
+minNpts4year=$((minNpts4season*4))
+
+if [[ "${climatology_def_list[0]}" == "AllyearAllmonth" ]]; then
+   minNpts=${minNpts4year}
+else
+   minNpts=${minNpts4season}
+fi
+unset minNpts4year minNpts4season
+
+if [[ "${MRMS_mdBZ_type}" =~ ^(MergedReflectivityQCComposite|MergedReflectivityQComposite)$ ]]; then
+   if [[ "${MRMS_P_type}" == "PrecipRate" ]]; then
+      filename_p1="ZPH"
+      filename_p2="${MRMS_mdBZ_type}_${MRMS_P_type}"
+      nlev4mdbzOmB_shouldBe=1
+      nlev4zOmB_shouldBe=2 # 1000 m, 4000 m
+   else
+      echo "ERROR: MRMS_P_type=${MRMS_P_type} is illegal"; exit 2222
+   fi
+else
+   echo "ERROR: MRMS_mdBZ_type=${MRMS_mdBZ_type} is illegal"; exit 2222
+fi
+
+
+### Folders
+: "${myscript:?Need to set myscript environment variable}"
+: "${mydata:?Need to set mydata environment variable}"
+fig_dir="${myscript}/Figures"
+out_dir="${myscript}/OUT"
+fix_dir="${myscript}/FIX"
+utl_dir="${myscript}/Utilities"
+scripts_dir="${myscript}/paper2026_Zomb"
+epoch=`date +"%s"`
+
+
+### File
+#infile_name="${out_dir}/results4${main_f90}/${filename_p1}.OmBhrrr.Climatology_${climatology_def}.EveryLeadTime.${filename_p2}.opt4thresh_${opt4thresh}.fromFortran.nc"
+declare -a file_list
+for climatology_def in "${climatology_def_list[@]}"; do
+    file_name="${out_dir}/${filename_p1}.OmBhrrr.Climatology_${climatology_def}.EveryLeadTime.${filename_p2}.opt4thresh_${opt4thresh}.${domain4stratification}.fromFortran.nc"
+    if [[ ! -f ${file_name} ]]; then echo "ERROR: no ${file_name}"; exit 2222; fi
+    file_list+=("${file_name}")
+done 
+
+
+### Figure
+tmp1=$(basename ${file_name} .fromFortran.nc)
+tmp2=$(IFS=; echo "${climatology_def_list[*]}")
+tmp3="${tmp1//${climatology_def}/${tmp2}}"
+fig_name="${fig_dir}/${tmp3}.stats_zOmBmdbzOmB.minNpts${minNpts}.fromFortran"
+[[ -f ${fig_name}.pdf ]] && rm -rf ${fig_name}.pdf
+unset tmp1 tmp2 tmp3
+
+
+### shapefile
+# US: https://www.weather.gov/gis/USStates
+CAshape_file="${utl_dir}/NCL/CA_shapefiles/CA_Counties_TIGER2016.shp"
+if [[ ! -f ${CAshape_file} ]]; then echo "ERROR: NO ${CAshape_file}"; exit 2222; fi
+echo "CA Shapefile:  ${CAshape_file}"
+
+USshape_file="${utl_dir}/NCL/US_shapefiles/s_22mr22.shp"
+if [[ ! -f ${USshape_file} ]]; then echo "ERROR: NO ${USshape_file}"; exit 2222; fi
+echo "US Shapefile:  ${USshape_file}"
+
+
+### Radar file
+radarALL_file="${myscript}/calc_nexrad/radar-stations.txt"
+if [[ ! -f ${radarALL_file} ]]; then echo "ERROR: no ${radarALL_file}"; exit 2222; fi
+radarUSE_file="${myscript}/calc_nexrad/radar-stations.CONUSonly.NAMEonly.txt"
+if [[ ! -f ${radarUSE_file} ]]; then echo "ERROR: no ${radarUSE_file}"; exit 2222; fi
+
+
+### Modify the file name list, so that it could be recognized in NCL
+declare -a file_list_NCL
+for ii in "${!file_list[@]}"; do
+    if [ ${ii} -lt $((${#file_list[@]}-1)) ]; then
+       file_list_NCL[${ii}]="\"${file_list[${ii}]}\","
+    else
+       file_list_NCL[${ii}]="\"${file_list[${ii}]}\""
+    fi
+done
+
+declare -a climatology_def_list_NCL
+for ii in "${!climatology_def_list[@]}"; do
+    if [ ${ii} -lt $((${#climatology_def_list[@]}-1)) ]; then
+       if [[ "${climatology_def_list[${ii}]:0:4}" == "case" ]]; then     
+          climatology_def_list_NCL[${ii}]="\"${climatology_def_list[${ii}]}\","
+       else	   
+          climatology_def_list_NCL[${ii}]="\"${climatology_def_list[${ii}]:7:3}\","
+       fi	  
+    else
+       if [[ "${climatology_def_list[${ii}]:0:4}" == "case" ]]; then	    
+          climatology_def_list_NCL[${ii}]="\"${climatology_def_list[${ii}]}\""
+       else
+          climatology_def_list_NCL[${ii}]="\"${climatology_def_list[${ii}]:7:3}\""
+       fi 
+    fi
+done
+
+declare -a var4stats_list_NCL
+for ii in "${!var4stats_list[@]}"; do
+    if [ ${ii} -lt $((${#var4stats_list[@]}-1)) ]; then
+       var4stats_list_NCL[${ii}]="\"${var4stats_list[${ii}]}\","
+    else
+       var4stats_list_NCL[${ii}]="\"${var4stats_list[${ii}]}\""
+    fi
+done
+
+
+### create NCL file
+#ncl_name="${out_dir}/${cmd}.${epoch}.ncl"
+ncl_name="${out_dir}/${cmd}.${epoch}.$(basename ${fig_name}).ncl"
+if [[ -f ${ncl_name} ]]; then rm -rf ${ncl_name}; fi
+
+cat > ${ncl_name} << EOF
+load "${utl_dir}/NCL/plot.radars.ncl"
+
+begin
+
+minNpts               = ${minNpts}
+nlev4mdbzOmB_shouldBe = ${nlev4mdbzOmB_shouldBe}
+nlev4zOmB_shouldBe    = ${nlev4zOmB_shouldBe}
+
+CAshape_file = "${CAshape_file}"
+USshape_file = "${USshape_file}"
+
+radarALL_file   = "${radarALL_file}"
+radarUSE_file   = "${radarUSE_file}"
+
+file_list_NCL   = (/${file_list_NCL[@]}/)
+nseason         = dimsizes(file_list_NCL)
+
+climatology_def_list_NCL = (/${climatology_def_list_NCL[@]}/)
+if(nseason.ne.dimsizes(climatology_def_list_NCL)) then
+   print("ERROR: nseason != dimsizes(climatology_def_list_NCL)")
+   exit()
+end if
+
+var4stats_list_NCL = (/${var4stats_list_NCL[@]}/)
+nvar4stats         = dimsizes(var4stats_list_NCL)
+
+do ivar4stats = 0, nvar4stats-1
+   if(var4stats_list_NCL(ivar4stats).eq."mdbzOmB") then
+      ivar4stats_mdbzOmB = ivar4stats
+   else if(var4stats_list_NCL(ivar4stats).eq."zOmB") then
+      ivar4stats_zOmB    = ivar4stats
+   end if
+   end if
+end do
+
+nlev4var           = new(nvar4stats, "integer")
+do ivar4stats = 0, nvar4stats-1
+   if(var4stats_list_NCL(ivar4stats).eq."mdbzOmB" .or. var4stats_list_NCL(ivar4stats).eq."mdbzO" .or. var4stats_list_NCL(ivar4stats).eq."mdbzB") then
+     nlev4var(ivar4stats) = nlev4mdbzOmB_shouldBe
+   else if (var4stats_list_NCL(ivar4stats).eq."zOmB" .or. var4stats_list_NCL(ivar4stats).eq."zO" .or. var4stats_list_NCL(ivar4stats).eq."zB") then
+     nlev4var(ivar4stats) = nlev4zOmB_shouldBe
+   else if (var4stats_list_NCL(ivar4stats).eq."hrrr_0degCHgt") then
+     nlev4var(ivar4stats) = nlev4mdbzOmB_shouldBe
+   end if
+   end if
+   end if
+end do
+
+
+;;; Dimensions
+file_name = file_list_NCL(0) 
+infile    = addfile(file_name, "r")
+
+dim_sizes = getfiledimsizes(infile)   ; Returns an array of sizes
+dim_names = getfiledimnames(infile)
+do i = 0, dimsizes(dim_names)-1
+   if(dim_names(i).eq."beamDiameter") then
+      nbins_beamDiameter  = dim_sizes(i)
+   else if(dim_names(i).eq."dist2freezing") then
+      nbins_dist2freezing = dim_sizes(i)
+   else if(dim_names(i).eq."radarName") then
+      nbins_radarName     = dim_sizes(i)
+   else if(dim_names(i).eq."x") then
+      nx                  = dim_sizes(i)
+   else if(dim_names(i).eq."y") then
+      ny                  = dim_sizes(i)
+   else if(dim_names(i).eq."height") then
+      nlev                = dim_sizes(i)
+   else if(dim_names(i).eq."LeadTime") then
+      nLeadTime           = dim_sizes(i)
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+end do
+delete([/dim_sizes,dim_names/])
+
+if(nlev.ne.nlev4zOmB_shouldBe) then
+   print("ERROR: nlev != nlev4zOmB_shouldBe")
+   exit()
+end if
+
+lev1d  = infile->XLEV
+lat2d  = infile->XLAT
+lon2d  = infile->XLONG
+LeadTime_arrInt = infile->LeadTime ; [minutes]
+delete([/file_name,infile/])
+
+do iLeadTime = 0, nLeadTime-1
+   if(LeadTime_arrInt(iLeadTime).eq.0) then
+      iLeadTime_0min   = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.15) then
+      iLeadTime_15min  = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.30) then
+      iLeadTime_30min  = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.60) then
+      iLeadTime_60min  = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.180) then
+      iLeadTime_180min = iLeadTime
+   else if(LeadTime_arrInt(iLeadTime).eq.360) then
+      iLeadTime_360min = iLeadTime
+   end if
+   end if
+   end if
+   end if
+   end if
+   end if
+end do
+
+
+;;; Variables
+;var4read_list = (/"${var4stats}_pmean", "${var4stats}_npts"/)
+var4read_base = (/"_pmean", "_npts"/)
+var4read_list = new((/nvar4stats,dimsizes(var4read_base)/), "string")
+do ivar4stats = 0, nvar4stats-1
+   do i = 0, dimsizes(var4read_base)-1
+      var4read_list(ivar4stats,i)=var4stats_list_NCL(ivar4stats)+var4read_base(i)
+   end do
+end do
+
+omb_p50       = new((/nseason,nvar4stats,nLeadTime,nlev,ny,nx/),"float")
+omb_pmean     = new((/nseason,nvar4stats,nLeadTime,nlev,ny,nx/),"float")
+omb_skewness  = new((/nseason,nvar4stats,nLeadTime,nlev,ny,nx/),"float")
+omb_kurtosis  = new((/nseason,nvar4stats,nLeadTime,nlev,ny,nx/),"float")
+omb_npts      = new((/nseason,nvar4stats,nLeadTime,nlev,ny,nx/),"integer")
+omb_p50       = omb_p50@_FillValue
+omb_pmean     = omb_pmean@_FillValue
+omb_skewness  = omb_skewness@_FillValue
+omb_kurtosis  = omb_kurtosis@_FillValue
+omb_p50       = omb_p50@_FillValue
+
+do iseason = 0, nseason-1
+   file_name = file_list_NCL(iseason)
+   print("READ: "+file_name)
+   infile    = addfile(file_name, "r")
+
+   dim_sizes = getfiledimsizes(infile)   ; Returns an array of sizes
+   dim_names = getfiledimnames(infile)
+   do i = 0, dimsizes(dim_names)-1
+      if(dim_names(i).eq."beamDiameter") then
+         nbins_beamDiameter_in  = dim_sizes(i)
+      else if(dim_names(i).eq."dist2freezing") then
+         nbins_dist2freezing_in = dim_sizes(i)
+      else if(dim_names(i).eq."radarName") then
+         nbins_radarName_in     = dim_sizes(i)
+      else if(dim_names(i).eq."x") then
+         nx_in                  = dim_sizes(i)
+      else if(dim_names(i).eq."y") then
+         ny_in                  = dim_sizes(i)
+      else if(dim_names(i).eq."height") then
+         nlev_in                = dim_sizes(i)
+      else if(dim_names(i).eq."LeadTime") then
+         nLeadTime_in           = dim_sizes(i)
+      end if
+      end if
+      end if
+      end if
+      end if
+      end if
+      end if
+   end do
+   delete([/dim_sizes,dim_names/])
+   ;if(nbins_beamDiameter.ne.nbins_beamDiameter_in .or. nbins_dist2freezing.ne.nbins_dist2freezing_in .or. nbins_radarName_in.ne.nbins_radarName .or. nx.ne.nx_in .or. ny.ne.ny_in .or. nlev.ne.nlev_in .or. nLeadTime.ne.nLeadTime_in) then
+    if(nx.ne.nx_in .or. ny.ne.ny_in .or. nlev.ne.nlev_in .or. nLeadTime.ne.nLeadTime_in) then
+      print("ERROR: dims are wrong")
+      exit()
+   end if
+   ;delete([/nbins_beamDiameter_in,nbins_dist2freezing_in,nbins_radarName_in,nx_in,ny_in,nlev_in,nLeadTime_in/])
+    delete([/nx_in,ny_in,nlev_in,nLeadTime_in/])
+
+   lev1d_in  = infile->XLEV
+   lat2d_in  = infile->XLAT
+   lon2d_in  = infile->XLONG
+   LeadTime_arrInt_in = infile->LeadTime ; [minutes]
+   tmp1 = max(abs(lev1d_in-lev1d))
+   tmp2 = max(abs(lat2d_in-lat2d))
+   tmp3 = max(abs(lon2d_in-lon2d))
+   tmp4 = max(abs(LeadTime_arrInt_in-LeadTime_arrInt))
+   if(tmp1.ne.0. .or. tmp2.ne.0. .or. tmp3.ne.0. .or. tmp4.ne.0) then
+      print("ERROR: coordinates are wrong")
+      exit()
+   end if
+   delete([/lev1d_in,lat2d_in,lon2d_in,LeadTime_arrInt_in,tmp1,tmp2,tmp3,tmp4/])
+
+   do ivar4stats = 0, nvar4stats-1
+      do ivar = 0, dimsizes(var4read_list(ivar4stats,:))-1
+         var_name = var4read_list(ivar4stats,ivar)
+         tmp      = infile->\$var_name\$    ; (LeadTime, height, y, x)
+         tmp1     = dimsizes(tmp)
+         nlev_now = tmp1(1)
+	 delete([/tmp1/])
+         if(isStrSubset(var_name,"p50")) then
+	    omb_p50(iseason,ivar4stats,:,0:nlev_now-1,:,:)      = (/tmp/)
+         else if(isStrSubset(var_name,"pmean")) then
+	    omb_pmean(iseason,ivar4stats,:,0:nlev_now-1,:,:)    = (/tmp/)
+         else if(isStrSubset(var_name,"skewness")) then
+	    omb_skewness(iseason,ivar4stats,:,0:nlev_now-1,:,:) = (/tmp/)
+         else if(isStrSubset(var_name,"kurtosis")) then
+	    omb_kurtosis(iseason,ivar4stats,:,0:nlev_now-1,:,:) = (/tmp/)
+         else if(isStrSubset(var_name,"npts")) then
+	    omb_npts(iseason,ivar4stats,:,0:nlev_now-1,:,:)     = (/tmp/)
+         end if
+         end if
+         end if
+         end if
+         end if
+         delete([/var_name,tmp/])
+         delete([/nlev_now/])
+      end do
+   end do
+
+   delete([/file_name,infile/])
+end do
+
+print("OmB (climatology): [min,avg,max] = ["+min(omb_p50)+","+avg(omb_p50)+","+max(omb_p50)+"]")
+print("   *** Mask OmB where npts < "+minNpts+" ***   ")
+omb_p50      = where(omb_npts.lt.minNpts, omb_p50@_FillValue  , omb_p50)
+omb_pmean    = where(omb_npts.lt.minNpts, omb_pmean@_FillValue  , omb_pmean)
+omb_skewness = where(omb_npts.lt.minNpts, omb_skewness@_FillValue, omb_skewness)
+omb_kurtosis = where(omb_npts.lt.minNpts, omb_kurtosis@_FillValue, omb_kurtosis)
+omb_npts     = where(omb_npts.eq.0.0,     omb_npts@_FillValue,  omb_npts)
+
+; excess kurtosis
+omb_kurtosis = omb_kurtosis - 3.0
+
+print("Median   (climatology): [min,avg,max] = ["+min(omb_p50)+","+avg(omb_p50)+","+max(omb_p50)+"]")
+print("Mean     (climatology): [min,avg,max] = ["+min(omb_pmean)+","+avg(omb_pmean)+","+max(omb_pmean)+"]")
+print("Skewness (climatology): [min,avg,max] = ["+min(omb_skewness)+","+avg(omb_skewness)+","+max(omb_skewness)+"]")
+print("Kurtosis (climatology): [min,avg,max] = ["+min(omb_kurtosis)+","+avg(omb_kurtosis)+","+max(omb_kurtosis)+"]")
+print("Npt      (climatology): [min,avg,max] = ["+min(omb_npts)+","+avg(omb_npts)+","+max(omb_npts)+"]")
+
+
+;;; PLOT
+fig_name = "${fig_name}"
+wks      = gsn_open_wks("pdf",fig_name)
+;gsn_define_colormap(wks, "precip_11lev")
+
+setvalues NhlGetWorkspaceObjectId()
+   "wsMaximumSize": 19000000000
+end setvalues
+
+
+;;; New color map
+cmap_tmp = read_colormap_file("cb_9step") ; n x 4 is returned, where n is the number of colors in the colormap. Colors are 4-tuples of red, green, blue, opacity values, in the range [0., 1.].
+tmp = dimsizes(cmap_tmp)
+my_cmap= new((/tmp(0)+1,tmp(1)/),"float")
+
+;my_cmap(0:tmp(0)/2-1,:) = cmap_tmp(0:tmp(0)/2-1,:)
+;my_cmap(tmp(0)/2,0:2)   = namedcolor2rgb("white")
+;my_cmap(tmp(0)/2,3)     = 1.0
+;my_cmap(tmp(0)/2+1:,:)  = cmap_tmp(tmp(0)/2:,:)
+
+my_cmap(0:tmp(0)-1,:) = cmap_tmp(:,:) 
+my_cmap(tmp(0),0:2)   = namedcolor2rgb("white")
+my_cmap(tmp(0),3)     = 1.0
+
+delete([/cmap_tmp,tmp/])
+;printVarSummary(my_cmap)
+
+
+if("${var4stats}".eq."mdbzOmB" .or. "${var4stats}".eq."zOmB") then
+   ; var4plt_list = (/"p50", "skewness", "kurtosis", "npts"/)
+   if(("${climatology_def}".eq."case2021Jan") .or. ("${climatology_def}".eq."case2021Oct") .or. ("${climatology_def}".eq."case2023Jan") .or. ("${climatology_def}".eq."case2026Jan")) then
+      var4plt_list = (/"pmean"/)
+   else
+      var4plt_list = (/"p50" , "npts"/)
+   end if
+else
+   if(("${climatology_def}".eq."case2021Jan") .or. ("${climatology_def}".eq."case2021Oct") .or. ("${climatology_def}".eq."case2023Jan") .or. ("${climatology_def}".eq."case2026Jan")) then
+      var4plt_list = (/"pmean", "npts"/)
+   else
+      var4plt_list = (/"p50"  , "npts"/)
+   end if
+end if
+nvar     = dimsizes(var4plt_list)
+
+mpid  = new((/nseason,nvar4stats,nLeadTime,nlev,nvar/),"graphic")
+shid  = new((/nseason,nvar4stats,nLeadTime,nlev,nvar/),"graphic")
+
+res           = True
+res@gsnDraw   = False
+res@gsnFrame  = False
+res@gsnLeftString = ""
+res@gsnRightString = ""
+
+res@tiMainFont = "times-roman"
+res@tiMainFontHeightF = 0.02 ; 0.015
+res@tiMainFontThicknessF = 0.8 ; 0.5
+res@tiMainJust           = "CenterLeft"
+res@tiMainPosition       = "Left"
+res@tiMainOffsetYF = -0.005 ; -0.01
+
+res@gsnStringFont = "times-roman"
+res@gsnStringFontHeightF = 0.025 ; 0.02
+res@gsnLeftString = ""
+res@gsnRightString = ""
+res@gsnLeftStringOrthogonalPosF  = 0.01
+res@gsnRightStringOrthogonalPosF = 0.01
+
+;res@tmXBLabelFont    = "times-roman"
+;res@tmYLLabelFont    = "times-roman"
+;res@tmXBLabelFontHeightF   = 0.015     ; X axis labels.
+;res@tmYLLabelFontHeightF   = 0.015
+
+;---Necessary for contours to be overlaid correctly on WRF projection
+res@tfDoNDCOverlay = False
+res@gsnAddCyclic          = False         ; data is regional
+
+;---Map plot
+map_res                      = res
+map_res@gsnFrame             = False
+map_res@gsnDraw              = False
+;map_res@tiMainString         = ""
+map_res@gsnLeftString        = ""
+map_res@gsnRightString       = ""
+;map_res@gsnStringFontHeightF = 0.015
+
+;---Set map resources based on projection on WRF output file
+;map_res = wrf_map_resources(infile_map,map_res)
+map_res@mpFillOn                    = False
+map_res@mpDataBaseVersion           = "MediumRes"; "HighRes"
+map_res@mpUSStateLineColor          = "grey"
+map_res@mpPerimLineColor            = "Black"
+map_res@mpNationalLineColor         = "Black"
+map_res@mpLimbLineColor             = "Black"
+map_res@mpGridLineColor             = "Black"
+map_res@mpGeophysicalLineColor      = "Black"
+map_res@mpUSStateLineThicknessF     = 1.0
+map_res@mpNationalLineThicknessF    = 1.0
+map_res@mpGeophysicalLineThicknessF = 1.0
+map_res@mpOutlineOn           = True                ; turn on map outline
+map_res@mpOutlineDrawOrder    = "PostDraw"           ; Draw map outlines last
+map_res@mpOutlineBoundarySets       = "National"   ; turn on country boundaries
+map_res@mpOutlineSpecifiers         = (/"United States : States"/)
+map_res@pmTickMarkDisplayMode = "Always"             ; Turn on map tickmarks
+
+map_res@pmTickMarkDisplayMode = "NoCreate"             ; Turn on map tickmarks
+map_res@tmXBOn = False
+map_res@tmYLOn = False
+map_res@tmXTOn = False
+map_res@tmYROn = False
+
+; mpLimitMode="LatLon": mpMinLatF/mpMaxLatF/mpMinLonF/mpMaxLonF
+map_res@mpLimitMode         = "Corners"   ; corner method of zoom,
+; 22. / 51. / -130. / -60. 
+
+do iseason    = 0, nseason-1
+do ivar4stats = 0, nvar4stats-1
+do iLeadTime  = 0, nLeadTime-1
+do ilev       = 0, nlev4var(ivar4stats)-1
+do ivar       = 0, nvar-1
+   min_lat = 23.0
+   max_lat = 51.8
+   ;min_lon = -130.
+   ;max_lon = -61.0
+   if(iseason.eq.0) then ; west
+      min_lon = -130. 
+      max_lon = -109. 
+      map_res@vpWidthF         = 0.243478
+      map_res@vpHeightF        = 0.333913  
+   else                  ; east
+      min_lon = -109. 
+      max_lon = -61.0 
+      map_res@vpWidthF         = 0.8 - 0.243478
+      map_res@vpHeightF        = 0.333913      
+   end if
+   map_res@mpLeftCornerLatF    = min_lat     ; left corner
+   map_res@mpLeftCornerLonF    = min_lon     ; left corner
+   map_res@mpRightCornerLatF   = max_lat     ; right corner
+   map_res@mpRightCornerLonF   = max_lon     ; right corner
+
+   mpid(iseason,ivar4stats,iLeadTime,ilev,ivar) = gsn_csm_map(wks,map_res)
+
+   ;getvalues mpid(iseason,ivar4stats,iLeadTime,ilev,ivar)
+   ;   "vpWidthF" : vwx
+   ;   "vpHeightF": vhx
+   ;end getvalues
+end do
+end do
+end do
+end do
+end do
+
+
+;;; shaded plot
+shres = res
+shres@cnFillOn             = True
+shres@cnLinesOn            = False
+shres@cnLineLabelsOn       = False
+shres@cnInfoLabelOn        = False
+;shres@cnFillPalette        = "WhBlGrYeRe" ; "precip4_11lev"
+shres@lbLabelBarOn         = False ; True
+shres@lbOrientation        = "Horizontal";"Vertical"
+;shres@lbTitleString        = "MoistFC"
+shres@lbTitlePosition      = "Top";"Left"
+shres@lbTitleFontHeightF   = 0.02
+shres@lbLabelFontHeightF   = 0.015
+shres@cnFillDrawOrder      = "Predraw"
+shres@cnFillMode = "AreaFill" ;    "AreaFill" "CellFill" "RasterFill"
+
+shres@cnMissingValFillPattern = 0
+shres@cnMissingValFillColor   = "grey91"          ; color fill missing areas blue
+shres@cnMissingValFillScaleF  = 1.0             ; increase the density of the fill pattern (default=1.0)
+shres@cnMissingValPerimOn     = False
+shres@cnMissingValPerimColor  = shres@cnMissingValFillColor
+shres@cnMissingValPerimDashPattern = 1
+shres@cnMissingValPerimThicknessF  = 3.0
+
+months_str = (/"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"/)
+
+do iseason    = 0, nseason-1
+   if(iseason.eq.0) then
+      shres@gsnStringFontHeightF = 0.030 ; 0.02
+   else   
+      shres@gsnStringFontHeightF = 0.022 ; 0.02
+   end if
+do ivar4stats = 0, nvar4stats-1
+do iLeadTime  = 0, nLeadTime-1
+do ilev       = 0, nlev4var(ivar4stats)-1
+do ivar       = 0, nvar-1	
+   if(iseason.eq.1) then
+      if(ivar4stats.eq.ivar4stats_zOmB) then       
+	 shres@tiYAxisString = "~F26~Z~B4~MRMS~N~        ~F18~-~F26~Z~B4~HRRR~N~        , "+lev1d(ilev)+" [m] AGL"     
+      else if(ivar4stats.eq.ivar4stats_mdbzOmB) then       
+         shres@tiYAxisString = "~F26~mdbZ~B4~MRMS~N~        ~F18~-~F26~mdbZ~B4~HRRR"     
+      end if     
+      end if     
+      shres@tiYAxisOffsetXF  = -0.275
+   end if	
+
+   if(iseason.eq.0 .and. ivar4stats.eq.ivar4stats_zOmB) then 
+      fig_strID = "(a)"
+   else if(iseason.eq.1 .and. ivar4stats.eq.ivar4stats_zOmB) then 
+      fig_strID = "(b)"
+   else if(iseason.eq.0 .and. ivar4stats.eq.ivar4stats_mdbzOmB) then  
+      fig_strID = "(c)"
+   else if(iseason.eq.1 .and. ivar4stats.eq.ivar4stats_mdbzOmB) then  
+      fig_strID = "(d)"
+   else
+      fig_strID = ""
+   end if
+   end if
+   end if
+   end if
+   if(climatology_def_list_NCL(iseason).eq."case2021Jan") then
+      beg_YMDH="2021012706"
+      end_YMDH="2021012806"
+   else if(climatology_def_list_NCL(iseason).eq."case2021Oct") then
+      beg_YMDH="2021102412"
+      end_YMDH="2021102512"
+   else if(climatology_def_list_NCL(iseason).eq."case2023Jan") then
+      beg_YMDH="2023010906"
+      end_YMDH="2023011006"
+   else if(climatology_def_list_NCL(iseason).eq."case2026Jan") then
+      beg_YMDH="2026012500"
+      end_YMDH="2026012600"
+   end if
+   end if
+   end if
+   end if
+   beg_Y4=systemfunc("csh -c | echo "+beg_YMDH+" | cut -c 1-4")
+   beg_MM=systemfunc("csh -c | echo "+beg_YMDH+" | cut -c 5-6")
+   beg_DD=systemfunc("csh -c | echo "+beg_YMDH+" | cut -c 7-8")
+   beg_HH=systemfunc("csh -c | echo "+beg_YMDH+" | cut -c 9-10")
+   end_Y4=systemfunc("csh -c | echo "+end_YMDH+" | cut -c 1-4")
+   end_MM=systemfunc("csh -c | echo "+end_YMDH+" | cut -c 5-6")
+   end_DD=systemfunc("csh -c | echo "+end_YMDH+" | cut -c 7-8")
+   end_HH=systemfunc("csh -c | echo "+end_YMDH+" | cut -c 9-10")
+   end_MM_str = months_str(stringtoint(end_MM) - 1)
+   time_str="~F25~"+beg_HH+"z "+beg_DD+"~F18~-~F25~"+end_HH+"z "+end_DD+" "+end_MM_str+" "+end_Y4
+   ;shres@gsnLeftString = fig_strID + " " + climatology_def_list_NCL(iseason) 
+   shres@gsnLeftString = fig_strID + " " + time_str 
+   delete([/beg_YMDH,end_YMDH,beg_Y4,beg_MM,beg_DD,beg_HH,end_Y4,end_MM,end_DD,end_HH,end_MM_str,time_str/])
+   delete([/fig_strID/])
+   if(iseason.eq.1 .and. ivar4stats.eq.ivar4stats_zOmB) then
+      shres@gsnRightString = "LT="+LeadTime_arrInt(iLeadTime)+" min"
+   end if
+
+   var_name = var4plt_list(ivar)
+   if(var_name.eq."p50") then
+      plot_var = omb_p50(iseason,ivar4stats,iLeadTime,ilev,:,:)
+   else if(var_name.eq."pmean") then
+      plot_var = omb_pmean(iseason,ivar4stats,iLeadTime,ilev,:,:)
+   else if(var_name.eq."skewness") then
+      plot_var = omb_skewness(iseason,ivar4stats,iLeadTime,ilev,:,:)
+   else if(var_name.eq."kurtosis") then
+      plot_var = omb_kurtosis(iseason,ivar4stats,iLeadTime,ilev,:,:)
+   else if(var_name.eq."npts") then
+      plot_var = omb_npts(iseason,ivar4stats,iLeadTime,ilev,:,:) 
+   end if
+   end if
+   end if
+   end if
+   end if
+   ;shres@gsnLeftString = var_name+", LT="+LeadTime_arrInt(iLeadTime)+" [min]"   
+
+   ;if("${var4stats}".eq."mdbzOmB" .or. "${var4stats}".eq."mdbzO" .or. "${var4stats}".eq."mdbzB") then
+   ;   shres@gsnRightString = "" 
+   ;else if ("${var4stats}".eq."zOmB" .or. "${var4stats}".eq."zO" .or. "${var4stats}".eq."zB") then
+   ;   shres@gsnRightString = lev1d(ilev)+" [m] AGL      "
+   ;end if
+   ;end if
+
+   if(var_name.eq."p50" .or. var_name.eq."pmean") then
+      shres@cnLevelSelectionMode = "ManualLevels"
+      if("${var4stats}".eq."mdbzOmB" .or. "${var4stats}".eq."zOmB") then
+         ;shres@cnFillPalette        = "BlWhRe"
+
+	 ;shres@cnFillPalette        = "cb_9step"
+	 ;shres@cnFillColors = (/13,8,29,26,72,50,53,34,37/)
+	 ;shres@cnFillColors = shres@cnFillColors - 2
+
+         shres@cnFillPalette        = my_cmap
+         cnFillColors = (/13,10,29,26,80,50,53,34,37/)
+         shres@cnFillColors = cnFillColors - 2
+         delete([/cnFillColors/])
+
+         shres@cnMinLevelValF       =  -7. ; -11.
+         shres@cnMaxLevelValF       =   7. ;  11.
+         shres@cnLevelSpacingF      =   2.0 
+      else if("${var4stats}".eq."mdbzO" .or. "${var4stats}".eq."mdbzB" .or. "${var4stats}".eq."zO" .or. "${var4stats}".eq."zB") then
+         shres@cnFillPalette        = "StepSeq25"
+         shres@cnMinLevelValF       =   6. 
+         shres@cnMaxLevelValF       =   22. 
+         shres@cnLevelSpacingF      =   2.0
+      end if
+      end if
+   else if(var_name.eq."skewness") then
+      shres@cnFillPalette        = "BlWhRe"
+      shres@cnLevelSelectionMode = "ExplicitLevels"
+      ;shres@cnLevels             = (/-1.5, -1.25, -1., -0.75, -0.5, -0.25, 0.25, 0.5, 0.75, 1., 1.25, 1.5/)
+      shres@cnLevels             = (/-3., -1., -0.5, 0.5, 1., 3./)
+   else if(var_name.eq."kurtosis") then
+      shres@cnLevelSelectionMode = "ExplicitLevels"
+      shres@cnLevels             = (/-1.0, -0.5, 0.5, 2.0, 5.0, 9.0, 15.0/)
+      shres@cnFillPalette        = (/"blue4", "cornflowerblue", "white", "yellow", "orange", "red", "magenta", "purple"/)
+   else if(var_name.eq."npts") then
+      shres@cnLevelSelectionMode = "ManualLevels"
+      shres@cnMinLevelValF       =  ${minNpts}*1.0
+      if("${climatology_def}".eq."AllyearAllmonth") then
+         shres@cnMaxLevelValF       =  8000. 
+         shres@cnLevelSpacingF      =  800.0
+      else
+         shres@cnMaxLevelValF       =  2000.
+         shres@cnLevelSpacingF      =  200.0
+      end if
+   end if
+   end if
+   end if
+   end if
+
+   x_stride   = 1
+   y_stride   = x_stride
+   plot_var@lat2d = lat2d(::y_stride,::x_stride)
+   plot_var@lon2d = lon2d(::y_stride,::x_stride)
+   shid(iseason,ivar4stats,iLeadTime,ilev,ivar) = gsn_csm_contour(wks, plot_var(::y_stride,::x_stride), shres)
+   delete([/x_stride,y_stride/])
+
+   ;plot_var@lat2d = lat2d(::5,::5)
+   ;plot_var@lon2d = lon2d(::5,::5)
+   ;shid(iseason,ivar4stats,iLeadTime,ilev,ivar) = gsn_csm_contour(wks, plot_var(::5,::5), shres)
+
+   delete([/plot_var/])
+
+   att_list = (/"cnFillPalette","cnLevelSelectionMode","cnMinLevelValF","cnMaxLevelValF","cnLevelSpacingF","cnLevels","cnFillColors","gsnRightString","gsnLeftString","tiYAxisString"/)
+   do kk = 0, dimsizes(att_list)-1
+      if(isatt(shres,att_list(kk))) then
+         delete(shres@\$att_list(kk)\$)
+      end if
+   end do
+   delete([/att_list/])
+
+   overlay(mpid(iseason,ivar4stats,iLeadTime,ilev,ivar), shid(iseason,ivar4stats,iLeadTime,ilev,ivar))
+end do ; ivar
+end do ; ilev
+end do ; iLeadTime
+end do ; ivar4stats
+end do ; iseason
+
+
+;;; Add radar sites
+; https://www.ncei.noaa.gov/nexradinv/choosesite.jsp
+; This list includes all NEXRAD and TDWR sites, including test and decommissioned sites. TDWR sites IDs start with 'T', with the exception of 'TJUA', which is the WSR-88D in San Juan, PR. 'DAN1', 'DOP1', 'FOP1' and 'KOUN' are test sites.
+file_name    = radarUSE_file
+print("READ file: "+file_name)
+radars_list  = systemfunc("csh -c | cat "+file_name)
+nums_radar   = dimsizes(radars_list)
+
+id_radars_dot    = new((/nseason,nvar4stats,nLeadTime,nlev,nvar,nums_radar/),"graphic")
+;id_radars_text   = new((/nseason,nvar4stats,nLeadTime,nlev,nvar,nums_radarr/),"graphic")
+;id_radars_circle = new((/nseason,nvar4stats,nLeadTime,nlev,nvar,nums_radar,2/),"graphic")
+do iseason    = 0, nseason-1
+do ivar4stats = 0, nvar4stats-1
+do iLeadTime  = 0, nLeadTime-1
+do ilev       = 0, nlev4var(ivar4stats)-1
+do ivar       = 0, nvar-1	
+   id_radars_dot(iseason,ivar4stats,iLeadTime,ilev,ivar,:)  = gsn_add_radars_sites_dot   (wks,mpid(iseason,ivar4stats,iLeadTime,ilev,ivar),radarALL_file,radarUSE_file)
+   ;id_radars_text(:)     = gsn_add_radars_sites_text  (wks,mpid(ivar),radarALL_file,radarUSE_file)
+   ;id_radars_circle(:,:) = gsn_add_radars_sites_circle(wks,mpid(ivar),radarALL_file,radarUSE_file)
+end do
+end do
+end do
+end do
+end do
+
+
+;;; Panel
+pres                    = True                ; modify the panel plot
+pres@gsnFrame = False                          ; don't advance frame
+pres@gsnMaximize        = True
+pres@pmLabelBarWidthF   = 0.7
+pres@pmLabelBarHeightF  = 0.05
+pres@gsnPanelLabelBar   = True
+pres@lbBoxLinesOn       = False
+pres@lbLabelFontHeightF = 0.015 ; 0.015
+pres@pmLabelBarOrthogonalPosF = .008           ; move whole thing down
+pres@pmLabelBarParallelPosF   = 0.22 
+pres@lbTitleOn        = True                  ; turn on title
+pres@lbTitlePosition  = "Right"              ; title position
+pres@lbTitleDirection = "Across"             ; title direction
+pres@lbTitleFontHeightF= 0.015 ; 0.015                ; make title smaller
+pres@lbTitleOffsetF    = -0.02
+pres@gsnPanelScalePlotIndex = 0
+
+;pres@gsnPanelTop = 0.90    ; Push panel down to leave room for a top title
+pres@gsnPanelBottom = 0.10 ; Leave margin at the bottom
+;pres@gsnPanelLeft = 0.10   ; Leave margin on the left
+pres@gsnPanelRight = 0.70  ; Leave margin on the right
+pres@gsnPanelYWhiteSpacePercent = 1.0  ; Reduce vertical white space
+pres@gsnPanelXWhiteSpacePercent = 1.0  ; Reduce horizontal white space
+
+;pres@gsnPanelMainString = "${climatology_def}: ${Y4_list[@]}"
+
+;do ilev = 0, nlev4var-1
+;   plots1d = ndtooned(mpid(:,ilev,0:nvar-1))
+;   gsn_panel(wks, plots1d, (/nLeadTime,nvar/),pres)
+;   delete([/plots1d/])
+;
+;   if(nlev4var.gt.1 .and. ilev.lt.(nlev4var-1)) then
+;      frame(wks)
+;   end if
+;end do
+
+;do ilev = 0, nlev-1
+;   do ivar = 0, nvar-1
+;      if(var4plt_list(ivar).ne."npts") then
+;         pres@lbTitleString    = "[dBZ]"
+;      else
+;         pres@lbTitleString    = ""
+;      end if
+;      do iframe = 1, 2
+;	 if(iframe.eq.1) then
+;           ;LeadTimeId4plot = (/iLeadTime_15min, iLeadTime_30min , iLeadTime_60min/)	
+;            LeadTimeId4plot = (/iLeadTime_15min, iLeadTime_30min , iLeadTime_60min, iLeadTime_360min/)	
+;         else if(iframe.eq.2) then
+;	    LeadTimeId4plot = (/iLeadTime_0min , iLeadTime_180min, iLeadTime_360min/)
+;         end if   
+;         end if   
+;         do ivar4stats = 0, nvar4stats-1
+;            if(ilev.gt.(nlev4var(ivar4stats)-1)) then
+;	       continue
+;	    end if	 
+;
+;	    plotsNd_old = mpid(:,ivar4stats,LeadTimeId4plot,ilev,ivar)
+;	    plotsNd_old!0 = "Season"
+;	    plotsNd_old!1 = "LeadTime"
+;	    plotsNd_new = plotsNd_old(LeadTime|:, Season|:)
+;	    plots1d = ndtooned(plotsNd_new)
+;	    ;gsn_panel(wks,plots1d,(/dimsizes(LeadTimeId4plot),nseason/),pres)
+;
+;            pres@gsnPanelLeft  = 0.0 
+;            pres@gsnPanelRight = 0.30
+;            gsn_panel(wks,plotsNd_new(:,0),(/dimsizes(LeadTimeId4plot),1/),pres)
+;
+;            pres@gsnPanelLeft  = pres@gsnPanelRight 
+;            pres@gsnPanelRight = 1.0 
+;            gsn_panel(wks,plotsNd_new(:,1),(/dimsizes(LeadTimeId4plot),1/),pres)
+;
+;            frame(wks)
+;	    delete([/plotsNd_old,plotsNd_new,plots1d/])
+;         end do   
+;	delete([/LeadTimeId4plot/])
+;      end do	 
+;   end do
+;end do
+
+
+do ilev = 0, nlev-1
+   do ivar = 0, nvar-1
+      if(var4plt_list(ivar).ne."npts") then
+         pres@lbTitleString    = "[dBZ]"
+      else
+         pres@lbTitleString    = ""
+      end if
+      do iLeadTime = 0, nLeadTime-1 
+	 plotsNd_old = mpid(:,:,iLeadTime,ilev,ivar)     
+	 plotsNd_old!0 = "Season"
+	 plotsNd_old!1 = "var4stats"
+	 plotsNd_new = plotsNd_old(var4stats|:, Season|:)
+	 gsn_panel(wks,ndtooned(plotsNd_new(:,:)),(/nvar4stats,nseason/),pres)
+         frame(wks)
+	 delete([/plotsNd_old,plotsNd_new/])
+      end do	 
+   end do
+end do
+
+end
+
+EOF
+
+ncl ${ncl_name}
+#[[ -f ${ncl_name} ]] && rm -rf ${ncl_name}
